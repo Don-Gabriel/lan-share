@@ -16,6 +16,7 @@ class FileTransferService {
   FileTransferService._internal();
   Socket? _activeSocket;
   String? _pendingFilePath;
+  bool _transferCancelled = false;
 
   Function(List<int>)? onFileData;
 
@@ -123,6 +124,7 @@ class FileTransferService {
     required String filePath,
   }) async {
     try {
+      _transferCancelled = false;
       _pendingFilePath = filePath;
 
       this.fileName.value = fileName;
@@ -226,6 +228,21 @@ class FileTransferService {
     }
   }
 
+  Future<void> cancelTransfer() async {
+    try {
+      if (_activeSocket != null) {
+        final packet = jsonEncode({'type': 'cancel_transfer'});
+        _transferCancelled = true;
+
+        _activeSocket!.write(packet);
+
+        await _activeSocket!.flush();
+      }
+    } catch (_) {}
+
+    closeConnection();
+  }
+
   Future<void> sendTransferAck() async {
     if (_activeSocket == null) return;
 
@@ -256,20 +273,38 @@ class FileTransferService {
     await _activeSocket!.flush();
 
     await for (final chunk in file.openRead()) {
-      _activeSocket!.add(chunk);
+      if (_transferCancelled) {
+        print('TRANSFER CANCELLED');
+
+        return;
+      }
+
+      if (_activeSocket == null) {
+        return;
+      }
+
+      try {
+        _activeSocket!.add(chunk);
+      } catch (e) {
+        print('Socket closed during transfer');
+
+        return;
+      }
 
       transferred += chunk.length;
 
       onProgress?.call(transferred, totalSize);
     }
 
-    await _activeSocket!.flush();
+    if (!_transferCancelled && _activeSocket != null) {
+      await _activeSocket!.flush();
 
-    transferRunning.value = false;
+      transferRunning.value = false;
 
-    sending.value = false;
+      sending.value = false;
 
-    print('File data sent: $totalSize bytes');
+      print('File data sent: $totalSize bytes');
+    }
   }
 
   Future<void> sendAccept() async {
@@ -291,6 +326,7 @@ class FileTransferService {
   }
 
   void closeConnection() {
+    _transferCancelled = true;
     _offerTimeout?.cancel();
     _activeSocket?.destroy();
     _activeSocket = null;

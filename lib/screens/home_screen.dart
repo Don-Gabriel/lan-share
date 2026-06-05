@@ -32,6 +32,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int? incomingFileSize;
 
   RandomAccessFile? receivingFile;
+  File? receivingTempFile;
   int receivedSize = 0;
   Future<void> _writeQueue = Future.value();
 
@@ -150,7 +151,8 @@ class _HomeScreenState extends State<HomeScreen> {
       transferService.setReceivingState();
       return;
     }
-    if (packet['type'] != 'file_offer') {
+    if (packet['type'] == 'cancel_transfer') {
+      handleTransferCancelled();
       return;
     }
 
@@ -196,8 +198,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
                 incomingFileName = tempFile.uri.pathSegments.last;
 
-                receivingFile = await tempFile.open(mode: FileMode.write);
+                receivingTempFile = tempFile;
 
+                receivingFile = await tempFile.open(mode: FileMode.write);
                 transferService.fileName.value = incomingFileName!;
 
                 transferService.totalBytes.value = incomingFileSize!;
@@ -225,6 +228,30 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Future<void> handleTransferCancelled() async {
+    try {
+      await receivingFile?.close();
+    } catch (_) {}
+
+    receivingFile = null;
+
+    try {
+      if (receivingTempFile != null && await receivingTempFile!.exists()) {
+        await receivingTempFile!.delete();
+      }
+    } catch (_) {}
+
+    receivedSize = 0;
+
+    transferService.transferRunning.value = false;
+
+    if (mounted) {
+      Navigator.of(context).popUntil((route) => route.isFirst);
+    }
+
+    print('PARTIAL FILE DELETED');
+  }
+
   Future<void> onFileDataReceived(List<int> data) async {
     if (receivingFile == null) return;
 
@@ -248,6 +275,7 @@ class _HomeScreenState extends State<HomeScreen> {
         await receivingFile!.flush();
 
         await saveReceivedFile();
+        receivingTempFile = null;
 
         await transferService.sendTransferAck();
 

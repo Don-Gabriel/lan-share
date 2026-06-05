@@ -130,6 +130,13 @@ class _ProgressScreenState extends State<ProgressScreen> {
                     ),
                   ),
                 ),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.close),
+                  label: const Text('Cancel Transfer'),
+                  onPressed: () async {
+                    await transferService.cancelTransfer();
+                  },
+                ),
               ],
             );
           },
