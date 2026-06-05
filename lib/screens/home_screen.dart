@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'send_file_screen.dart';
 import '../services/file_transfer_service.dart';
 import 'dart:io';
+import '../services/hash_service.dart';
 import 'dart:async';
 import 'package:path_provider/path_provider.dart';
 import '../services/download_path_service.dart';
@@ -30,6 +31,7 @@ class _HomeScreenState extends State<HomeScreen> {
   List<DiscoveredDevice> devices = [];
   String? incomingFileName;
   int? incomingFileSize;
+  String? expectedHash;
 
   RandomAccessFile? receivingFile;
   File? receivingTempFile;
@@ -157,6 +159,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     incomingFileName = packet['name'];
+    expectedHash = packet['sha256'];
     incomingFileSize = packet['size'];
 
     if (!mounted) return;
@@ -271,19 +274,45 @@ class _HomeScreenState extends State<HomeScreen> {
 
       print('Received $receivedSize / $incomingFileSize');
 
-      if (incomingFileSize != null && receivedSize >= incomingFileSize!) {
+      if (incomingFileSize != null && receivedSize == incomingFileSize!) {
         await receivingFile!.flush();
 
-        await saveReceivedFile();
-        receivingTempFile = null;
+        final actualHash = await HashService.calculateSha256(
+          receivingTempFile!.path,
+        );
+
+        print('EXPECTED HASH: $expectedHash');
+        print('ACTUAL HASH:   $actualHash');
+
+        if (actualHash != expectedHash) {
+          print('HASH MISMATCH');
+
+          transferService.transferResult.value = TransferResult.failed;
+
+          return;
+        }
+
+        print('HASH VERIFIED');
 
         await transferService.sendTransferAck();
+        transferService.setIdleState();
+
+        await Future.delayed(const Duration(milliseconds: 500));
+
+        await saveReceivedFile();
+
+        receivingTempFile = null;
 
         transferService.transferRunning.value = false;
 
         if (mounted) {
           Navigator.of(context).popUntil((route) => route.isFirst);
         }
+      } else if (receivedSize > incomingFileSize!) {
+        print(
+          'ERROR: RECEIVED MORE BYTES THAN EXPECTED '
+          '$receivedSize > $incomingFileSize',
+        );
       }
     });
 

@@ -2,6 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'dart:async';
+import 'hash_service.dart';
+import 'dart:typed_data';
+import 'protocol_service.dart';
 
 enum TransferState { idle, receivingFile }
 
@@ -48,9 +51,9 @@ class FileTransferService {
   Future<void> sendReject() async {
     if (_activeSocket == null) return;
 
-    final packet = jsonEncode({'type': 'reject'});
+    final packet = ProtocolService.createPacket('reject', []);
 
-    _activeSocket!.write(packet);
+    _activeSocket!.add(packet);
 
     await _activeSocket!.flush();
 
@@ -67,6 +70,8 @@ class FileTransferService {
 
     print('TCP Server listening on 55555');
 
+    final packetBuffer = BytesBuilder();
+
     server.listen((client) {
       print('NEW TCP CONNECTION');
       print('Client connected: ${client.remoteAddress.address}');
@@ -75,21 +80,50 @@ class FileTransferService {
 
       client.listen(
         (data) {
-          if (_state == TransferState.receivingFile) {
-            this.onFileData?.call(data);
-            return;
-          }
+          packetBuffer.add(data);
 
-          try {
-            final message = utf8.decode(data);
+          final packets = ProtocolService.extractPackets(packetBuffer);
 
-            final packet = jsonDecode(message) as Map<String, dynamic>;
+          for (final packet in packets) {
+            if (packet.type == 'file_chunk') {
+              onFileData?.call(packet.payload);
+              continue;
+            }
 
-            onPacket(packet);
-          } catch (e) {
-            this.onFileData?.call(data);
+            if (packet.type == 'file_start') {
+              onPacket({'type': 'file_start'});
+              continue;
+            }
 
-            print('RAW FILE DATA RECEIVED: ${data.length} bytes');
+            if (packet.type == 'accept') {
+              onPacket({'type': 'accept'});
+              continue;
+            }
+
+            if (packet.type == 'transfer_ack') {
+              onPacket({'type': 'transfer_ack'});
+              continue;
+            }
+
+            if (packet.type == 'reject') {
+              onPacket({'type': 'reject'});
+              continue;
+            }
+
+            if (packet.type == 'cancel_transfer') {
+              onPacket({'type': 'cancel_transfer'});
+              continue;
+            }
+
+            if (packet.type == 'file_offer') {
+              final json = utf8.decode(packet.payload);
+
+              final dataMap = jsonDecode(json) as Map<String, dynamic>;
+
+              dataMap['type'] = 'file_offer';
+
+              onPacket(dataMap);
+            }
           }
         },
         onDone: () {
@@ -109,9 +143,11 @@ class FileTransferService {
   Future<void> sendProgress(int received) async {
     if (_activeSocket == null) return;
 
-    final packet = jsonEncode({'type': 'progress', 'received': received});
+    final payload = utf8.encode(jsonEncode({'received': received}));
 
-    _activeSocket!.write(packet);
+    final packet = ProtocolService.createPacket('progress', payload);
+
+    _activeSocket!.add(packet);
 
     await _activeSocket!.flush();
   }
@@ -119,9 +155,9 @@ class FileTransferService {
   Future<void> sendComplete() async {
     if (_activeSocket == null) return;
 
-    final packet = jsonEncode({'type': 'complete'});
+    final packet = ProtocolService.createPacket('complete', []);
 
-    _activeSocket!.write(packet);
+    _activeSocket!.add(packet);
 
     await _activeSocket!.flush();
   }
@@ -162,13 +198,22 @@ class FileTransferService {
         timeout: const Duration(seconds: 5),
       );
 
-      final packet = jsonEncode({
-        'type': 'file_offer',
+      final hash = await HashService.calculateSha256(filePath);
+
+      print('SHA256: $hash');
+
+      final jsonPacket = jsonEncode({
         'name': fileName,
         'size': fileSize,
+        'sha256': hash,
       });
 
-      _activeSocket!.write(packet);
+      final framed = ProtocolService.createPacket(
+        'file_offer',
+        utf8.encode(jsonPacket),
+      );
+
+      _activeSocket!.add(framed);
 
       await _activeSocket!.flush();
 
@@ -189,19 +234,28 @@ class FileTransferService {
         _activeSocket = null;
       });
 
+      final senderPacketBuffer = BytesBuilder();
+
       _activeSocket!.listen((data) {
-        try {
-          final message = utf8.decode(data);
+        senderPacketBuffer.add(data);
 
-          final packet = jsonDecode(message) as Map<String, dynamic>;
+        final packets = ProtocolService.extractPackets(senderPacketBuffer);
 
-          print('Sender received: $packet');
-          if (packet['type'] == 'progress') {
-            transferredBytes.value = packet['received'];
+        for (final packet in packets) {
+          print('SENDER FRAME: ${packet.type}');
 
-            return;
+          if (packet.type == 'progress') {
+            final progressJson = utf8.decode(packet.payload);
+
+            final progressData =
+                jsonDecode(progressJson) as Map<String, dynamic>;
+
+            transferredBytes.value = progressData['received'];
+
+            continue;
           }
-          if (packet['type'] == 'transfer_ack') {
+
+          if (packet.type == 'transfer_ack') {
             print('TRANSFER VERIFIED');
 
             transferResult.value = TransferResult.success;
@@ -209,18 +263,18 @@ class FileTransferService {
             transferredBytes.value = totalBytes.value;
 
             transferRunning.value = false;
-            transferResult.value = TransferResult.none;
 
             sending.value = false;
 
             _activeSocket?.destroy();
             _activeSocket = null;
 
-            return;
+            continue;
           }
 
-          if (packet['type'] == 'accept') {
+          if (packet.type == 'accept') {
             _offerTimeout?.cancel();
+
             print('TRANSFER ACCEPTED');
 
             sendFileData(
@@ -228,8 +282,11 @@ class FileTransferService {
                 print('SEND: $transferred / $total');
               },
             );
+
+            continue;
           }
-          if (packet['type'] == 'reject') {
+
+          if (packet.type == 'reject') {
             _offerTimeout?.cancel();
 
             transferResult.value = TransferResult.failed;
@@ -238,10 +295,8 @@ class FileTransferService {
 
             sending.value = false;
 
-            return;
+            continue;
           }
-        } catch (e) {
-          print('Sender invalid packet');
         }
       });
     } catch (e) {
@@ -252,10 +307,10 @@ class FileTransferService {
   Future<void> cancelTransfer() async {
     try {
       if (_activeSocket != null) {
-        final packet = jsonEncode({'type': 'cancel_transfer'});
-        _transferCancelled = true;
+        final packet = ProtocolService.createPacket('cancel_transfer', []);
 
-        _activeSocket!.write(packet);
+        _activeSocket!.add(packet);
+        _transferCancelled = true;
         transferResult.value = TransferResult.cancelled;
 
         await _activeSocket!.flush();
@@ -268,9 +323,9 @@ class FileTransferService {
   Future<void> sendTransferAck() async {
     if (_activeSocket == null) return;
 
-    final packet = jsonEncode({'type': 'transfer_ack'});
+    final packet = ProtocolService.createPacket('transfer_ack', []);
 
-    _activeSocket!.write(packet);
+    _activeSocket!.add(packet);
 
     await _activeSocket!.flush();
   }
@@ -288,9 +343,8 @@ class FileTransferService {
 
     int transferred = 0;
 
-    final startPacket = jsonEncode({'type': 'file_start'});
-
-    _activeSocket!.write(startPacket);
+    final startPacket = ProtocolService.createPacket('file_start', []);
+    _activeSocket!.add(startPacket);
 
     await _activeSocket!.flush();
 
@@ -306,7 +360,7 @@ class FileTransferService {
       }
 
       try {
-        _activeSocket!.add(chunk);
+        _activeSocket!.add(ProtocolService.createPacket('file_chunk', chunk));
       } catch (e) {
         print('Socket closed during transfer');
 
@@ -335,10 +389,7 @@ class FileTransferService {
     if (!_transferCancelled && _activeSocket != null) {
       await _activeSocket!.flush();
 
-      transferRunning.value = false;
-
-      sending.value = false;
-
+      print('ALL FILE BYTES SENT');
       print('File data sent: $totalSize bytes');
     }
   }
@@ -366,9 +417,9 @@ class FileTransferService {
   Future<void> sendAccept() async {
     if (_activeSocket == null) return;
 
-    final packet = jsonEncode({'type': 'accept'});
+    final packet = ProtocolService.createPacket('accept', []);
 
-    _activeSocket!.write(packet);
+    _activeSocket!.add(packet);
 
     await _activeSocket!.flush();
 
@@ -394,6 +445,10 @@ class FileTransferService {
     transferredBytes.value = 0;
 
     totalBytes.value = 0;
+    _state = TransferState.idle;
+  }
+
+  void setIdleState() {
     _state = TransferState.idle;
   }
 
