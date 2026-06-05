@@ -51,17 +51,6 @@ class _SendFileScreenState extends State<SendFileScreen> {
       isSending = true;
     });
 
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ProgressScreen(
-          isSending: true,
-          fromDevice: 'This Device',
-          toDevice: widget.deviceName,
-        ),
-      ),
-    );
-
     try {
       Navigator.push(
         context,

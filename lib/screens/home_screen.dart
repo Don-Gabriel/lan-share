@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import '../services/download_path_service.dart';
 import 'progress_screen.dart';
+import 'package:flutter_file_dialog/flutter_file_dialog.dart';
+import 'dart:typed_data';
 
 import '../models/discovered_device.dart';
 import '../services/device_info_service.dart';
@@ -40,13 +42,21 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> saveReceivedFile() async {
     if (receivingFile == null) return;
 
-    await receivingFile!.flush();
+    final path = receivingFile!.path;
 
+    await receivingFile!.flush();
     await receivingFile!.close();
 
     receivingFile = null;
 
-    print('FILE SAVED: $incomingFileName');
+    final params = SaveFileDialogParams(
+      sourceFilePath: path,
+      fileName: incomingFileName,
+    );
+
+    await FlutterFileDialog.saveFile(params: params);
+
+    print('FILE SAVED TO DOWNLOADS');
   }
 
   Future<void> loadDeviceInfo() async {
@@ -115,12 +125,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
                 receivedSize = 0;
 
-                final downloadPath = await DownloadPathService()
-                    .getDownloadPath();
+                final tempDir = await getTemporaryDirectory();
 
-                final file = File('$downloadPath/$incomingFileName');
+                final tempFile = File('${tempDir.path}/$incomingFileName');
 
-                receivingFile = await file.open(mode: FileMode.write);
+                receivingFile = await tempFile.open(mode: FileMode.write);
 
                 transferService.fileName.value = incomingFileName!;
 
