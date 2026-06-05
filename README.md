@@ -18,5 +18,6 @@ samples, guidance on mobile development, and a full API reference.
 
 
 git add .
-git commit -m "Add file sharing feature"
-git push
+git commit -m "message"
+git pull --rebase origin main
+git push origin main
