@@ -13,6 +13,7 @@ enum TransferResult { none, success, failed, cancelled }
 class FileTransferService {
   static final FileTransferService instance = FileTransferService._internal();
   Timer? _offerTimeout;
+  ServerSocket? _server;
 
   factory FileTransferService() {
     return instance;
@@ -44,6 +45,8 @@ class FileTransferService {
 
   ValueNotifier<String> fileName = ValueNotifier('');
 
+  ValueNotifier<String> transferStatus = ValueNotifier('');
+
   ValueNotifier<String> fromDevice = ValueNotifier('');
 
   ValueNotifier<String> toDevice = ValueNotifier('');
@@ -64,10 +67,17 @@ class FileTransferService {
     required Function(Map<String, dynamic>) onPacket,
     Function(List<int>)? onFileData,
   }) async {
+    print('START SERVER CALLED');
     this.onFileData = onFileData;
 
-    final server = await ServerSocket.bind(InternetAddress.anyIPv4, 55555);
+    await _server?.close();
+    print('BINDING TO ${InternetAddress.anyIPv4.address}:55555');
 
+    _server = await ServerSocket.bind(InternetAddress.anyIPv4, 55555);
+    print('SERVER OBJECT CREATED');
+
+    final server = _server!;
+    print('SERVER BOUND SUCCESSFULLY');
     print('TCP Server listening on 55555');
 
     final packetBuffer = BytesBuilder();
@@ -189,14 +199,18 @@ class FileTransferService {
 
       // optional for now
       fromDevice.value = Platform.localHostname;
+      transferStatus.value = 'Processing File...';
 
       print('Connecting to $ip...');
+
+      print('ATTEMPTING TCP CONNECT TO $ip:55555');
 
       _activeSocket = await Socket.connect(
         ip,
         55555,
         timeout: const Duration(seconds: 5),
       );
+      print('TCP CONNECT SUCCESS');
 
       final hash = await HashService.calculateSha256(filePath);
 
@@ -276,6 +290,7 @@ class FileTransferService {
             _offerTimeout?.cancel();
 
             print('TRANSFER ACCEPTED');
+            transferStatus.value = 'Sending File...';
 
             sendFileData(
               onProgress: (transferred, total) {
@@ -413,6 +428,8 @@ class FileTransferService {
     if (!_transferCancelled && _activeSocket != null) {
       await _activeSocket!.flush();
 
+      transferStatus.value = 'Finalizing Transfer...';
+
       print('ALL FILE BYTES SENT');
       print('File data sent: $totalSize bytes');
 
@@ -478,6 +495,7 @@ class FileTransferService {
     transferredBytes.value = 0;
 
     totalBytes.value = 0;
+    transferStatus.value = '';
     _state = TransferState.idle;
   }
 

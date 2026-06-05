@@ -126,12 +126,21 @@ class _HomeScreenState extends State<HomeScreen> {
     await discovery.startListening(onDeviceFound: onDeviceFound);
 
     discovery.startBroadcasting(name: info['name']!, ip: info['ip']!);
-    transferService.startServer(
-      onPacket: onPacketReceived,
-      onFileData: (data) {
-        onFileDataReceived(data);
-      },
-    );
+    try {
+      print('CALLING startServer()');
+      await transferService.startServer(
+        onPacket: onPacketReceived,
+        onFileData: (data) {
+          onFileDataReceived(data);
+        },
+      );
+
+      print('START SERVER SUCCESS');
+    } catch (e, s) {
+      print('START SERVER FAILED');
+      print(e);
+      print(s);
+    }
   }
 
   void removeOfflineDevices() {
@@ -152,6 +161,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (packet['type'] == 'file_start') {
       transferService.setReceivingState();
+      transferService.transferStatus.value = 'Receiving File...';
       return;
     }
     if (packet['type'] == 'cancel_transfer') {
@@ -280,6 +290,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (incomingFileSize != null && receivedSize == incomingFileSize!) {
         final receiveEndTime = DateTime.now();
+        transferService.transferStatus.value = 'Verifying File...';
         await receivingFile!.flush();
 
         final actualHash = await HashService.calculateSha256(
@@ -312,6 +323,7 @@ class _HomeScreenState extends State<HomeScreen> {
         transferService.setIdleState();
 
         await Future.delayed(const Duration(milliseconds: 500));
+        transferService.transferStatus.value = 'Saving File...';
 
         await saveReceivedFile();
 
@@ -330,6 +342,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void onDeviceFound(Map<String, dynamic> data) {
+    print('DISCOVERY: ${data['name']} -> ${data['ip']}');
     if (deviceInfo == null) return;
 
     final myIp = deviceInfo!['ip'];
@@ -351,6 +364,12 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       } else {
         devices[index].lastSeen = DateTime.now();
+
+        devices[index] = DiscoveredDevice(
+          name: data['name'],
+          ip: data['ip'],
+          lastSeen: DateTime.now(),
+        );
       }
     });
   }
@@ -414,6 +433,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                   subtitle: Text(device.ip),
                                   trailing: const Icon(Icons.arrow_forward_ios),
                                   onTap: () {
+                                    print('SELECTED DEVICE IP = ${device.ip}');
                                     Navigator.push(
                                       context,
                                       MaterialPageRoute(

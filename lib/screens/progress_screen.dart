@@ -172,6 +172,21 @@ class _ProgressScreenState extends State<ProgressScreen> {
                   },
                 ),
 
+                ValueListenableBuilder<String>(
+                  valueListenable: transferService.transferStatus,
+                  builder: (context, status, _) {
+                    return Text(
+                      status,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    );
+                  },
+                ),
+
+                const SizedBox(height: 20),
+
                 const SizedBox(height: 30),
 
                 LinearProgressIndicator(value: progress, minHeight: 12),
