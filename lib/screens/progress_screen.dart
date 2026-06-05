@@ -21,22 +21,7 @@ class _ProgressScreenState extends State<ProgressScreen> {
   final FileTransferService transferService = FileTransferService();
 
   @override
-  void initState() {
-    super.initState();
-
-    transferService.transferRunning.addListener(_onTransferStateChanged);
-  }
-
-  void _onTransferStateChanged() {
-    if (!transferService.transferRunning.value && mounted) {
-      Navigator.of(context).popUntil((route) => route.isFirst);
-    }
-  }
-
-  @override
   void dispose() {
-    transferService.transferRunning.removeListener(_onTransferStateChanged);
-
     super.dispose();
   }
 
@@ -58,6 +43,66 @@ class _ProgressScreenState extends State<ProgressScreen> {
     }
 
     return '$bytes B';
+  }
+
+  Widget buildResultScreen() {
+    final result = transferService.transferResult.value;
+
+    String title;
+
+    IconData icon;
+
+    if (result == TransferResult.success) {
+      title = 'Transfer Completed';
+      icon = Icons.check_circle;
+    } else if (result == TransferResult.cancelled) {
+      title = 'Transfer Cancelled';
+      icon = Icons.cancel;
+    } else {
+      title = 'Transfer Failed';
+      icon = Icons.error;
+    }
+
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 80),
+
+          const SizedBox(height: 20),
+
+          Text(
+            title,
+            style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+          ),
+
+          const SizedBox(height: 20),
+
+          Text(
+            transferService.fileName.value,
+            style: const TextStyle(fontSize: 18),
+          ),
+
+          const SizedBox(height: 40),
+
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(context).popUntil((route) => route.isFirst);
+            },
+            child: const Text('Back To Home'),
+          ),
+
+          const SizedBox(height: 10),
+
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+            },
+            child: const Text('Send More Files'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -83,6 +128,10 @@ class _ProgressScreenState extends State<ProgressScreen> {
             final progress = total == 0 ? 0.0 : transferred / total;
 
             final remaining = (total - transferred).clamp(0, total);
+
+            if (!transferService.transferRunning.value) {
+              return buildResultScreen();
+            }
 
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -114,6 +163,14 @@ class _ProgressScreenState extends State<ProgressScreen> {
                 const SizedBox(height: 10),
 
                 Text('Remaining: ${formatBytes(remaining)}'),
+                const SizedBox(height: 10),
+
+                ValueListenableBuilder<String>(
+                  valueListenable: transferService.eta,
+                  builder: (context, eta, _) {
+                    return Text('ETA: $eta');
+                  },
+                ),
 
                 const SizedBox(height: 30),
 

@@ -5,6 +5,8 @@ import 'dart:async';
 
 enum TransferState { idle, receivingFile }
 
+enum TransferResult { none, success, failed, cancelled }
+
 class FileTransferService {
   static final FileTransferService instance = FileTransferService._internal();
   Timer? _offerTimeout;
@@ -17,6 +19,7 @@ class FileTransferService {
   Socket? _activeSocket;
   String? _pendingFilePath;
   bool _transferCancelled = false;
+  DateTime? _transferStartTime;
 
   Function(List<int>)? onFileData;
 
@@ -24,9 +27,15 @@ class FileTransferService {
 
   ValueNotifier<int> transferredBytes = ValueNotifier(0);
 
+  ValueNotifier<String> eta = ValueNotifier('--');
+
   ValueNotifier<int> totalBytes = ValueNotifier(0);
 
   ValueNotifier<bool> transferRunning = ValueNotifier(false);
+
+  ValueNotifier<TransferResult> transferResult = ValueNotifier(
+    TransferResult.none,
+  );
 
   ValueNotifier<bool> sending = ValueNotifier(false);
 
@@ -125,6 +134,9 @@ class FileTransferService {
   }) async {
     try {
       _transferCancelled = false;
+      _transferStartTime = DateTime.now();
+
+      eta.value = '--';
       _pendingFilePath = filePath;
 
       this.fileName.value = fileName;
@@ -167,10 +179,14 @@ class FileTransferService {
       _offerTimeout = Timer(const Duration(seconds: 30), () {
         print('TRANSFER TIMEOUT');
 
+        transferResult.value = TransferResult.failed;
+
         transferRunning.value = false;
+
         sending.value = false;
 
-        closeConnection();
+        _activeSocket?.destroy();
+        _activeSocket = null;
       });
 
       _activeSocket!.listen((data) {
@@ -188,13 +204,17 @@ class FileTransferService {
           if (packet['type'] == 'transfer_ack') {
             print('TRANSFER VERIFIED');
 
+            transferResult.value = TransferResult.success;
+
             transferredBytes.value = totalBytes.value;
 
             transferRunning.value = false;
+            transferResult.value = TransferResult.none;
 
             sending.value = false;
 
-            closeConnection();
+            _activeSocket?.destroy();
+            _activeSocket = null;
 
             return;
           }
@@ -211,7 +231,8 @@ class FileTransferService {
           }
           if (packet['type'] == 'reject') {
             _offerTimeout?.cancel();
-            print('TRANSFER REJECTED');
+
+            transferResult.value = TransferResult.failed;
 
             transferRunning.value = false;
 
@@ -235,6 +256,7 @@ class FileTransferService {
         _transferCancelled = true;
 
         _activeSocket!.write(packet);
+        transferResult.value = TransferResult.cancelled;
 
         await _activeSocket!.flush();
       }
@@ -293,6 +315,20 @@ class FileTransferService {
 
       transferred += chunk.length;
 
+      final elapsedSeconds = DateTime.now()
+          .difference(_transferStartTime!)
+          .inSeconds;
+
+      if (elapsedSeconds > 0) {
+        final bytesPerSecond = transferred / elapsedSeconds;
+
+        final remainingBytes = totalSize - transferred;
+
+        final etaSeconds = (remainingBytes / bytesPerSecond).round();
+
+        eta.value = formatEta(etaSeconds);
+      }
+
       onProgress?.call(transferred, totalSize);
     }
 
@@ -305,6 +341,26 @@ class FileTransferService {
 
       print('File data sent: $totalSize bytes');
     }
+  }
+
+  String formatEta(int seconds) {
+    if (seconds <= 0) {
+      return '0s';
+    }
+
+    final hours = seconds ~/ 3600;
+    final minutes = (seconds % 3600) ~/ 60;
+    final secs = seconds % 60;
+
+    if (hours > 0) {
+      return '${hours}h ${minutes}m';
+    }
+
+    if (minutes > 0) {
+      return '${minutes}m ${secs}s';
+    }
+
+    return '${secs}s';
   }
 
   Future<void> sendAccept() async {
@@ -330,6 +386,7 @@ class FileTransferService {
     _offerTimeout?.cancel();
     _activeSocket?.destroy();
     _activeSocket = null;
+    eta.value = '--';
     transferRunning.value = false;
 
     sending.value = false;
