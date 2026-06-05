@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'send_file_screen.dart';
 import '../services/file_transfer_service.dart';
 import 'dart:io';
+import 'dart:async';
 import 'package:path_provider/path_provider.dart';
 import '../services/download_path_service.dart';
 import 'progress_screen.dart';
@@ -24,6 +25,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final FileTransferService transferService = FileTransferService();
 
   Map<String, String>? deviceInfo;
+  Timer? _deviceCleanupTimer;
 
   List<DiscoveredDevice> devices = [];
   String? incomingFileName;
@@ -36,27 +38,78 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+
     loadDeviceInfo();
+
+    _deviceCleanupTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      removeOfflineDevices();
+    });
+  }
+
+  Future<File> getUniqueFile(File file) async {
+    if (!await file.exists()) {
+      return file;
+    }
+
+    final path = file.path;
+
+    final dotIndex = path.lastIndexOf('.');
+
+    String name;
+    String extension;
+
+    if (dotIndex != -1) {
+      name = path.substring(0, dotIndex);
+      extension = path.substring(dotIndex);
+    } else {
+      name = path;
+      extension = '';
+    }
+
+    int count = 1;
+
+    while (true) {
+      final candidate = File('$name($count)$extension');
+
+      if (!await candidate.exists()) {
+        return candidate;
+      }
+
+      count++;
+    }
   }
 
   Future<void> saveReceivedFile() async {
     if (receivingFile == null) return;
 
-    final path = receivingFile!.path;
+    final tempPath = receivingFile!.path;
 
     await receivingFile!.flush();
     await receivingFile!.close();
 
     receivingFile = null;
 
-    final params = SaveFileDialogParams(
-      sourceFilePath: path,
-      fileName: incomingFileName,
-    );
+    if (Platform.isAndroid) {
+      final params = SaveFileDialogParams(
+        sourceFilePath: tempPath,
+        fileName: incomingFileName,
+      );
 
-    await FlutterFileDialog.saveFile(params: params);
+      await FlutterFileDialog.saveFile(params: params);
+    } else if (Platform.isWindows) {
+      final downloadsPath = await DownloadPathService().getDownloadPath();
 
-    print('FILE SAVED TO DOWNLOADS');
+      File destination = File('$downloadsPath/$incomingFileName');
+
+      destination = await getUniqueFile(destination);
+
+      await File(tempPath).copy(destination.path);
+      await File(tempPath).delete();
+
+      print('Saved to: ${destination.path}');
+    }
+
+    print('FILE SAVED');
   }
 
   Future<void> loadDeviceInfo() async {
@@ -75,6 +128,16 @@ class _HomeScreenState extends State<HomeScreen> {
         onFileDataReceived(data);
       },
     );
+  }
+
+  void removeOfflineDevices() {
+    final now = DateTime.now();
+
+    setState(() {
+      devices.removeWhere(
+        (device) => now.difference(device.lastSeen).inSeconds > 10,
+      );
+    });
   }
 
   void onPacketReceived(Map<String, dynamic> packet) {
@@ -127,7 +190,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
                 final tempDir = await getTemporaryDirectory();
 
-                final tempFile = File('${tempDir.path}/$incomingFileName');
+                File tempFile = File('${tempDir.path}/$incomingFileName');
+
+                tempFile = await getUniqueFile(tempFile);
+
+                incomingFileName = tempFile.uri.pathSegments.last;
 
                 receivingFile = await tempFile.open(mode: FileMode.write);
 
@@ -181,7 +248,8 @@ class _HomeScreenState extends State<HomeScreen> {
         await receivingFile!.flush();
 
         await saveReceivedFile();
-        await transferService.sendComplete();
+
+        await transferService.sendTransferAck();
 
         transferService.transferRunning.value = false;
 
@@ -222,7 +290,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _deviceCleanupTimer?.cancel();
+
     discovery.dispose();
+
     super.dispose();
   }
 

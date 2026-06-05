@@ -1,11 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'dart:async';
 
 enum TransferState { idle, receivingFile }
 
 class FileTransferService {
   static final FileTransferService instance = FileTransferService._internal();
+  Timer? _offerTimeout;
 
   factory FileTransferService() {
     return instance;
@@ -158,6 +160,17 @@ class FileTransferService {
 
       print('File offer sent');
 
+      _offerTimeout?.cancel();
+
+      _offerTimeout = Timer(const Duration(seconds: 30), () {
+        print('TRANSFER TIMEOUT');
+
+        transferRunning.value = false;
+        sending.value = false;
+
+        closeConnection();
+      });
+
       _activeSocket!.listen((data) {
         try {
           final message = utf8.decode(data);
@@ -170,17 +183,22 @@ class FileTransferService {
 
             return;
           }
-          if (packet['type'] == 'complete') {
+          if (packet['type'] == 'transfer_ack') {
+            print('TRANSFER VERIFIED');
+
             transferredBytes.value = totalBytes.value;
 
             transferRunning.value = false;
 
             sending.value = false;
 
+            closeConnection();
+
             return;
           }
 
           if (packet['type'] == 'accept') {
+            _offerTimeout?.cancel();
             print('TRANSFER ACCEPTED');
 
             sendFileData(
@@ -190,6 +208,7 @@ class FileTransferService {
             );
           }
           if (packet['type'] == 'reject') {
+            _offerTimeout?.cancel();
             print('TRANSFER REJECTED');
 
             transferRunning.value = false;
@@ -205,6 +224,16 @@ class FileTransferService {
     } catch (e) {
       print('Connection failed: $e');
     }
+  }
+
+  Future<void> sendTransferAck() async {
+    if (_activeSocket == null) return;
+
+    final packet = jsonEncode({'type': 'transfer_ack'});
+
+    _activeSocket!.write(packet);
+
+    await _activeSocket!.flush();
   }
 
   Future<void> sendFileData({
@@ -262,6 +291,7 @@ class FileTransferService {
   }
 
   void closeConnection() {
+    _offerTimeout?.cancel();
     _activeSocket?.destroy();
     _activeSocket = null;
     transferRunning.value = false;
