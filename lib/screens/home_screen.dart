@@ -306,6 +306,7 @@ class _HomeScreenState extends State<HomeScreen> {
         print(
           'RECEIVE SPEED: ${(receivedSize / 1024 / 1024 / seconds).toStringAsFixed(2)} MB/s',
         );
+        transferService.transferResult.value = TransferResult.success;
 
         await transferService.sendTransferAck();
         transferService.setIdleState();
@@ -317,10 +318,6 @@ class _HomeScreenState extends State<HomeScreen> {
         receivingTempFile = null;
 
         transferService.transferRunning.value = false;
-
-        if (mounted) {
-          Navigator.of(context).popUntil((route) => route.isFirst);
-        }
       } else if (receivedSize > incomingFileSize!) {
         print(
           'ERROR: RECEIVED MORE BYTES THAN EXPECTED '
