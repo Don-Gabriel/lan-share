@@ -341,28 +341,48 @@ class FileTransferService {
 
     final totalSize = await file.length();
 
+    final transferStart = DateTime.now();
+
     int transferred = 0;
+
+    bool printedChunkSize = false;
 
     final startPacket = ProtocolService.createPacket('file_start', []);
     _activeSocket!.add(startPacket);
 
     await _activeSocket!.flush();
 
-    await for (final chunk in file.openRead()) {
+    const chunkSize = 1024 * 1024; // 1 MB
+
+    final raf = await file.open();
+
+    while (true) {
       if (_transferCancelled) {
         print('TRANSFER CANCELLED');
+
+        await raf.close();
 
         return;
       }
 
       if (_activeSocket == null) {
+        await raf.close();
+
         return;
+      }
+
+      final chunk = await raf.read(chunkSize);
+
+      if (chunk.isEmpty) {
+        break;
       }
 
       try {
         _activeSocket!.add(ProtocolService.createPacket('file_chunk', chunk));
       } catch (e) {
         print('Socket closed during transfer');
+
+        await raf.close();
 
         return;
       }
@@ -383,14 +403,27 @@ class FileTransferService {
         eta.value = formatEta(etaSeconds);
       }
 
-      onProgress?.call(transferred, totalSize);
+      if (transferred % (10 * 1024 * 1024) < chunk.length) {
+        onProgress?.call(transferred, totalSize);
+      }
     }
+
+    await raf.close();
 
     if (!_transferCancelled && _activeSocket != null) {
       await _activeSocket!.flush();
 
       print('ALL FILE BYTES SENT');
       print('File data sent: $totalSize bytes');
+
+      final seconds =
+          DateTime.now().difference(transferStart).inMilliseconds / 1000;
+
+      print('SEND TIME: $seconds seconds');
+
+      print(
+        'SEND SPEED: ${(totalSize / 1024 / 1024 / seconds).toStringAsFixed(2)} MB/s',
+      );
     }
   }
 

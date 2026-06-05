@@ -36,6 +36,7 @@ class _HomeScreenState extends State<HomeScreen> {
   RandomAccessFile? receivingFile;
   File? receivingTempFile;
   int receivedSize = 0;
+  DateTime? receiveStartTime;
   Future<void> _writeQueue = Future.value();
 
   @override
@@ -192,6 +193,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 Navigator.pop(context);
 
                 receivedSize = 0;
+                receiveStartTime = DateTime.now();
 
                 final tempDir = await getTemporaryDirectory();
 
@@ -272,9 +274,12 @@ class _HomeScreenState extends State<HomeScreen> {
         incomingFileSize ?? 0,
       );
 
-      print('Received $receivedSize / $incomingFileSize');
+      if (receivedSize % (10 * 1024 * 1024) < data.length) {
+        print('Received $receivedSize / $incomingFileSize');
+      }
 
       if (incomingFileSize != null && receivedSize == incomingFileSize!) {
+        final receiveEndTime = DateTime.now();
         await receivingFile!.flush();
 
         final actualHash = await HashService.calculateSha256(
@@ -293,6 +298,14 @@ class _HomeScreenState extends State<HomeScreen> {
         }
 
         print('HASH VERIFIED');
+        final seconds =
+            receiveEndTime.difference(receiveStartTime!).inMilliseconds / 1000;
+
+        print('RECEIVE TIME: $seconds seconds');
+
+        print(
+          'RECEIVE SPEED: ${(receivedSize / 1024 / 1024 / seconds).toStringAsFixed(2)} MB/s',
+        );
 
         await transferService.sendTransferAck();
         transferService.setIdleState();
