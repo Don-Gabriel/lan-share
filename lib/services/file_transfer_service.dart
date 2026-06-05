@@ -5,6 +5,7 @@ import 'dart:async';
 import 'hash_service.dart';
 import 'dart:typed_data';
 import 'protocol_service.dart';
+import '../models/transfer_file.dart';
 
 enum TransferState { idle, receivingFile }
 
@@ -21,7 +22,13 @@ class FileTransferService {
 
   FileTransferService._internal();
   Socket? _activeSocket;
+  String? _targetIp;
   String? _pendingFilePath;
+  List<TransferFile> _transferQueue = [];
+
+  int _currentFileIndex = 0;
+
+  bool _batchTransfer = false;
   bool _transferCancelled = false;
   DateTime? _transferStartTime;
 
@@ -42,6 +49,10 @@ class FileTransferService {
   );
 
   ValueNotifier<bool> sending = ValueNotifier(false);
+
+  ValueNotifier<int> currentQueueIndex = ValueNotifier(1);
+
+  ValueNotifier<int> totalQueueFiles = ValueNotifier(1);
 
   ValueNotifier<String> fileName = ValueNotifier('');
 
@@ -67,18 +78,13 @@ class FileTransferService {
     required Function(Map<String, dynamic>) onPacket,
     Function(List<int>)? onFileData,
   }) async {
-    print('START SERVER CALLED');
     this.onFileData = onFileData;
 
     await _server?.close();
-    print('BINDING TO ${InternetAddress.anyIPv4.address}:55555');
 
     _server = await ServerSocket.bind(InternetAddress.anyIPv4, 55555);
-    print('SERVER OBJECT CREATED');
 
     final server = _server!;
-    print('SERVER BOUND SUCCESSFULLY');
-    print('TCP Server listening on 55555');
 
     final packetBuffer = BytesBuilder();
 
@@ -201,16 +207,15 @@ class FileTransferService {
       fromDevice.value = Platform.localHostname;
       transferStatus.value = 'Processing File...';
 
-      print('Connecting to $ip...');
+      _targetIp = ip;
 
-      print('ATTEMPTING TCP CONNECT TO $ip:55555');
+      print('Connecting to $ip...');
 
       _activeSocket = await Socket.connect(
         ip,
         55555,
         timeout: const Duration(seconds: 5),
       );
-      print('TCP CONNECT SUCCESS');
 
       final hash = await HashService.calculateSha256(filePath);
 
@@ -220,6 +225,9 @@ class FileTransferService {
         'name': fileName,
         'size': fileSize,
         'sha256': hash,
+        'batch': _batchTransfer,
+        'fileIndex': currentFileNumber,
+        'totalFiles': totalFilesInQueue,
       });
 
       final framed = ProtocolService.createPacket(
@@ -250,7 +258,7 @@ class FileTransferService {
 
       final senderPacketBuffer = BytesBuilder();
 
-      _activeSocket!.listen((data) {
+      _activeSocket!.listen((data) async {
         senderPacketBuffer.add(data);
 
         final packets = ProtocolService.extractPackets(senderPacketBuffer);
@@ -272,16 +280,28 @@ class FileTransferService {
           if (packet.type == 'transfer_ack') {
             print('TRANSFER VERIFIED');
 
-            transferResult.value = TransferResult.success;
-
             transferredBytes.value = totalBytes.value;
-
-            transferRunning.value = false;
-
-            sending.value = false;
 
             _activeSocket?.destroy();
             _activeSocket = null;
+
+            if (hasMoreFiles) {
+              print(
+                'QUEUE CONTINUES -> FILE ${currentFileNumber + 1}/$totalFilesInQueue',
+              );
+
+              await Future.delayed(const Duration(milliseconds: 500));
+
+              await sendNextFileInQueue(_targetIp!);
+            } else {
+              print('QUEUE FINISHED');
+
+              transferResult.value = TransferResult.success;
+
+              transferRunning.value = false;
+
+              sending.value = false;
+            }
 
             continue;
           }
@@ -317,6 +337,46 @@ class FileTransferService {
     } catch (e) {
       print('Connection failed: $e');
     }
+  }
+
+  Future<void> startBatchTransfer({required String ip}) async {
+    if (_transferQueue.isEmpty) {
+      return;
+    }
+
+    final firstFile = _transferQueue.first;
+
+    await sendFileOffer(
+      ip: ip,
+      fileName: firstFile.name,
+      fileSize: firstFile.size,
+      filePath: firstFile.path,
+    );
+  }
+
+  Future<void> sendNextFileInQueue(String ip) async {
+    if (!hasMoreFiles) {
+      return;
+    }
+
+    moveToNextFile();
+
+    final file = currentQueueFile;
+
+    if (file == null) {
+      return;
+    }
+
+    print(
+      'STARTING NEXT FILE ${currentFileNumber}/$totalFilesInQueue : ${file.name}',
+    );
+
+    await sendFileOffer(
+      ip: ip,
+      fileName: file.name,
+      fileSize: file.size,
+      filePath: file.path,
+    );
   }
 
   Future<void> cancelTransfer() async {
@@ -480,6 +540,49 @@ class FileTransferService {
     transferredBytes.value = 0;
 
     print('Accept sent');
+  }
+
+  void setTransferQueue(List<TransferFile> files) {
+    _transferQueue = List.from(files);
+
+    _currentFileIndex = 0;
+    currentQueueIndex.value = 1;
+
+    totalQueueFiles.value = files.length;
+
+    _batchTransfer = files.length > 1;
+  }
+
+  bool get hasMoreFiles {
+    return _currentFileIndex < (_transferQueue.length - 1);
+  }
+
+  TransferFile? get currentQueueFile {
+    if (_transferQueue.isEmpty) {
+      return null;
+    }
+
+    return _transferQueue[_currentFileIndex];
+  }
+
+  void moveToNextFile() {
+    if (hasMoreFiles) {
+      _currentFileIndex++;
+
+      currentQueueIndex.value = _currentFileIndex + 1;
+    }
+  }
+
+  int get totalFilesInQueue {
+    return _transferQueue.length;
+  }
+
+  int get currentFileNumber {
+    return _currentFileIndex + 1;
+  }
+
+  bool get isLastFileInQueue {
+    return _currentFileIndex == (_transferQueue.length - 1);
   }
 
   void closeConnection() {

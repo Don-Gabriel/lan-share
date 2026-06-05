@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'send_file_screen.dart';
 import '../services/file_transfer_service.dart';
 import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import '../services/hash_service.dart';
 import 'dart:async';
 import 'package:path_provider/path_provider.dart';
@@ -27,6 +28,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Map<String, String>? deviceInfo;
   Timer? _deviceCleanupTimer;
+  bool batchAccepted = false;
+  int currentBatchFile = 0;
+  int totalBatchFiles = 0;
 
   List<DiscoveredDevice> devices = [];
   String? incomingFileName;
@@ -35,6 +39,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   RandomAccessFile? receivingFile;
   File? receivingTempFile;
+  List<File> batchFilesToSave = [];
   int receivedSize = 0;
   DateTime? receiveStartTime;
   Future<void> _writeQueue = Future.value();
@@ -116,6 +121,34 @@ class _HomeScreenState extends State<HomeScreen> {
     print('FILE SAVED');
   }
 
+  Future<void> saveBatchFilesToFolder() async {
+    if (batchFilesToSave.isEmpty) {
+      return;
+    }
+
+    final folderPath = await FilePicker.platform.getDirectoryPath();
+
+    if (folderPath == null) {
+      return;
+    }
+
+    for (final file in batchFilesToSave) {
+      final fileName = file.uri.pathSegments.last;
+
+      File destination = File('$folderPath/$fileName');
+
+      destination = await getUniqueFile(destination);
+
+      await file.copy(destination.path);
+
+      await file.delete();
+    }
+
+    batchFilesToSave.clear();
+
+    print('ALL FILES SAVED');
+  }
+
   Future<void> loadDeviceInfo() async {
     final info = await DeviceInfoService().getDeviceInfo();
 
@@ -127,17 +160,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
     discovery.startBroadcasting(name: info['name']!, ip: info['ip']!);
     try {
-      print('CALLING startServer()');
       await transferService.startServer(
-        onPacket: onPacketReceived,
+        onPacket: (packet) async {
+          await onPacketReceived(packet);
+        },
         onFileData: (data) {
           onFileDataReceived(data);
         },
       );
-
-      print('START SERVER SUCCESS');
     } catch (e, s) {
-      print('START SERVER FAILED');
       print(e);
       print(s);
     }
@@ -153,9 +184,8 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  void onPacketReceived(Map<String, dynamic> packet) {
+  Future<void> onPacketReceived(Map<String, dynamic> packet) async {
     if (packet['type'] == 'accept') {
-      print('TRANSFER ACCEPTED');
       return;
     }
 
@@ -173,17 +203,63 @@ class _HomeScreenState extends State<HomeScreen> {
     expectedHash = packet['sha256'];
     incomingFileSize = packet['size'];
 
+    final bool batch = packet['batch'] ?? false;
+    final int fileIndex = packet['fileIndex'] ?? 1;
+    final int totalFiles = packet['totalFiles'] ?? 1;
+    currentBatchFile = fileIndex;
+    totalBatchFiles = totalFiles;
+
+    print(
+      'BATCH=$batch FILE=$fileIndex/$totalFiles batchAccepted=$batchAccepted',
+    );
+
+    if (batch && batchAccepted) {
+      receivedSize = 0;
+      receiveStartTime = DateTime.now();
+
+      final tempDir = await getTemporaryDirectory();
+
+      File tempFile = File('${tempDir.path}/$incomingFileName');
+
+      tempFile = await getUniqueFile(tempFile);
+
+      incomingFileName = tempFile.uri.pathSegments.last;
+
+      receivingTempFile = tempFile;
+
+      receivingFile = await tempFile.open(mode: FileMode.write);
+      receivedSize = 0;
+
+      transferService.fileName.value = incomingFileName!;
+
+      transferService.totalBytes.value = incomingFileSize!;
+
+      transferService.transferredBytes.value = 0;
+
+      if (batch) {
+        batchAccepted = true;
+      }
+
+      transferService.sendAccept();
+
+      return;
+    }
+
     if (!mounted) return;
 
     showDialog(
       context: context,
       builder: (context) {
         return AlertDialog(
-          title: const Text('Incoming File'),
+          title: Text(
+            batch ? 'Incoming Files ($fileIndex/$totalFiles)' : 'Incoming File',
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (batch) Text('File $fileIndex of $totalFiles'),
+
               Text(packet['name']),
               const SizedBox(height: 10),
               Text('${packet['size']} bytes'),
@@ -201,6 +277,10 @@ class _HomeScreenState extends State<HomeScreen> {
             ElevatedButton(
               onPressed: () async {
                 Navigator.pop(context);
+
+                if (batch) {
+                  batchAccepted = true;
+                }
 
                 receivedSize = 0;
                 receiveStartTime = DateTime.now();
@@ -258,13 +338,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
     receivedSize = 0;
 
-    transferService.transferRunning.value = false;
-
+    if (!batchAccepted) {
+      transferService.transferRunning.value = false;
+    }
     if (mounted) {
       Navigator.of(context).popUntil((route) => route.isFirst);
     }
-
-    print('PARTIAL FILE DELETED');
   }
 
   Future<void> onFileDataReceived(List<int> data) async {
@@ -293,6 +372,10 @@ class _HomeScreenState extends State<HomeScreen> {
         transferService.transferStatus.value = 'Verifying File...';
         await receivingFile!.flush();
 
+        print('VERIFY FILE: ${receivingTempFile?.path}');
+        print('SIZE: $receivedSize');
+        print('EXPECTED: $incomingFileSize');
+
         final actualHash = await HashService.calculateSha256(
           receivingTempFile!.path,
         );
@@ -312,24 +395,41 @@ class _HomeScreenState extends State<HomeScreen> {
         final seconds =
             receiveEndTime.difference(receiveStartTime!).inMilliseconds / 1000;
 
-        print('RECEIVE TIME: $seconds seconds');
-
-        print(
-          'RECEIVE SPEED: ${(receivedSize / 1024 / 1024 / seconds).toStringAsFixed(2)} MB/s',
-        );
         transferService.transferResult.value = TransferResult.success;
 
         await transferService.sendTransferAck();
-        transferService.setIdleState();
+
+        if (!batchAccepted) {
+          transferService.setIdleState();
+        }
 
         await Future.delayed(const Duration(milliseconds: 500));
-        transferService.transferStatus.value = 'Saving File...';
+        transferService.transferStatus.value = batchAccepted
+            ? 'Waiting For Remaining Files...'
+            : 'Saving File...';
 
-        await saveReceivedFile();
+        print(
+          'SAVE CHECK batchAccepted=$batchAccepted '
+          'file=$currentBatchFile/$totalBatchFiles',
+        );
 
-        receivingTempFile = null;
+        if (batchAccepted) {
+          batchFilesToSave.add(receivingTempFile!);
 
-        transferService.transferRunning.value = false;
+          if (currentBatchFile == totalBatchFiles) {
+            print('LAST FILE RECEIVED');
+
+            await saveBatchFilesToFolder();
+
+            transferService.transferRunning.value = false;
+
+            batchAccepted = false;
+          }
+        } else {
+          await saveReceivedFile();
+
+          receivingTempFile = null;
+        }
       } else if (receivedSize > incomingFileSize!) {
         print(
           'ERROR: RECEIVED MORE BYTES THAN EXPECTED '
@@ -342,7 +442,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void onDeviceFound(Map<String, dynamic> data) {
-    print('DISCOVERY: ${data['name']} -> ${data['ip']}');
     if (deviceInfo == null) return;
 
     final myIp = deviceInfo!['ip'];
@@ -433,7 +532,6 @@ class _HomeScreenState extends State<HomeScreen> {
                                   subtitle: Text(device.ip),
                                   trailing: const Icon(Icons.arrow_forward_ios),
                                   onTap: () {
-                                    print('SELECTED DEVICE IP = ${device.ip}');
                                     Navigator.push(
                                       context,
                                       MaterialPageRoute(

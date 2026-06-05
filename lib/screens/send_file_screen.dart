@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../services/file_transfer_service.dart';
 import 'progress_screen.dart';
+import '../models/transfer_file.dart';
+import '../models/transfer_file.dart';
 
 class SendFileScreen extends StatefulWidget {
   final String deviceName;
@@ -18,32 +20,36 @@ class SendFileScreen extends StatefulWidget {
 }
 
 class _SendFileScreenState extends State<SendFileScreen> {
-  String? selectedFile;
-  String? selectedFilePath;
-  int? selectedFileSize;
+  List<TransferFile> selectedFiles = [];
 
   bool isSending = false;
 
   final FileTransferService transferService = FileTransferService();
 
   Future<void> pickFile() async {
-    final result = await FilePicker.platform.pickFiles();
+    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
 
     if (result == null) return;
 
+    final files = <TransferFile>[];
+
+    for (final file in result.files) {
+      if (file.path == null) continue;
+
+      files.add(
+        TransferFile(name: file.name, path: file.path!, size: file.size),
+      );
+    }
+
     setState(() {
-      selectedFile = result.files.single.name;
-      selectedFilePath = result.files.single.path;
-      selectedFileSize = result.files.single.size;
+      selectedFiles = files;
     });
   }
 
   Future<void> sendFile() async {
     if (isSending) return;
 
-    if (selectedFile == null ||
-        selectedFilePath == null ||
-        selectedFileSize == null) {
+    if (selectedFiles.isEmpty) {
       return;
     }
 
@@ -62,12 +68,9 @@ class _SendFileScreenState extends State<SendFileScreen> {
           ),
         ),
       );
-      await transferService.sendFileOffer(
-        ip: widget.deviceIp,
-        fileName: selectedFile!,
-        fileSize: selectedFileSize!,
-        filePath: selectedFilePath!,
-      );
+      transferService.setTransferQueue(selectedFiles);
+
+      await transferService.startBatchTransfer(ip: widget.deviceIp);
     } finally {
       if (mounted) {
         setState(() {
@@ -107,7 +110,7 @@ class _SendFileScreenState extends State<SendFileScreen> {
                 const SizedBox(height: 40),
 
                 const Text(
-                  'Selected File',
+                  'Selected Files',
                   style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                 ),
 
@@ -124,11 +127,17 @@ class _SendFileScreenState extends State<SendFileScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(selectedFile ?? 'No file selected'),
-                      if (selectedFilePath != null)
-                        Text(
-                          selectedFilePath!,
-                          style: const TextStyle(fontSize: 12),
+                      if (selectedFiles.isEmpty)
+                        const Text('No files selected')
+                      else
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: selectedFiles.map((file) {
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: Text(file.name),
+                            );
+                          }).toList(),
                         ),
                     ],
                   ),
@@ -149,7 +158,7 @@ class _SendFileScreenState extends State<SendFileScreen> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: selectedFile == null || isSending
+                    onPressed: selectedFiles.isEmpty || isSending
                         ? null
                         : sendFile,
                     child: Text(isSending ? 'Sending...' : 'Send'),

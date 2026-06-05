@@ -77,6 +77,25 @@ class _ProgressScreenState extends State<ProgressScreen> {
           ),
 
           const SizedBox(height: 20),
+          ValueListenableBuilder<int>(
+            valueListenable: transferService.currentQueueIndex,
+            builder: (context, current, _) {
+              return ValueListenableBuilder<int>(
+                valueListenable: transferService.totalQueueFiles,
+                builder: (context, total, _) {
+                  return Text(
+                    'File $current of $total',
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+
+          const SizedBox(height: 10),
 
           Text(
             transferService.fileName.value,
