@@ -125,6 +125,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     print('FILE SAVED');
+    transferService.transferResult.value = TransferResult.success;
+    transferService.transferRunning.value = false;
+    transferService.transferredBytes.value++;
   }
 
   Future<void> saveBatchFilesToFolder() async {
@@ -162,6 +165,7 @@ class _HomeScreenState extends State<HomeScreen> {
     print('ALL FILES SAVED');
     transferService.transferResult.value = TransferResult.success;
     transferService.transferRunning.value = false;
+    transferService.transferredBytes.value++;
   }
 
   Future<void> loadDeviceInfo() async {
@@ -572,70 +576,156 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('LAN Share')),
-      body: Padding(
-        padding: const EdgeInsets.all(20),
-        child: deviceInfo == null
-            ? const Center(child: CircularProgressIndicator())
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'My Device',
-                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                  ),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        title: const Text(
+          'LAN Share',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
+      ),
+      extendBodyBehindAppBar: true,
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF081B3A), Color(0xFF0A2A5E), Color(0xFF1565C0)],
+          ),
+        ),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: deviceInfo == null
+                ? const Center(
+                    child: CircularProgressIndicator(color: Colors.white),
+                  )
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'My Device',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
 
-                  const SizedBox(height: 10),
+                      const SizedBox(height: 10),
 
-                  Text('Name: ${deviceInfo!['name']}'),
-                  Text('IP: ${deviceInfo!['ip']}'),
+                      Text(
+                        'Name: ${deviceInfo!['name']}',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 16,
+                        ),
+                      ),
 
-                  const SizedBox(height: 30),
+                      Text(
+                        'IP: ${deviceInfo!['ip']}',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 16,
+                        ),
+                      ),
 
-                  const Text(
-                    'Online Devices',
-                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                  ),
+                      const SizedBox(height: 30),
 
-                  const SizedBox(height: 10),
+                      Text(
+                        'Online Devices (${devices.length})',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
 
-                  Expanded(
-                    child: devices.isEmpty
-                        ? const Center(child: Text('No devices found'))
-                        : ListView.builder(
-                            itemCount: devices.length,
-                            itemBuilder: (context, index) {
-                              final device = devices[index];
+                      const SizedBox(height: 10),
 
-                              return Card(
-                                child: ListTile(
-                                  leading: const Icon(Icons.phone_android),
-                                  title: Text(
-                                    device.name,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                    ),
+                      Expanded(
+                        child: devices.isEmpty
+                            ? const Center(
+                                child: Text(
+                                  'Searching for devices...',
+                                  style: TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 16,
                                   ),
-                                  subtitle: Text(device.ip),
-                                  trailing: const Icon(Icons.arrow_forward_ios),
-                                  onTap: () {
-                                    Navigator.push(
-                                      context,
-                                      MaterialPageRoute(
-                                        builder: (_) => SendFileScreen(
-                                          deviceName: device.name,
-                                          deviceIp: device.ip,
+                                ),
+                              )
+                            : ListView.builder(
+                                itemCount: devices.length,
+                                itemBuilder: (context, index) {
+                                  final device = devices[index];
+
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 12),
+                                    child: Material(
+                                      color: Colors.white.withOpacity(0.08),
+                                      borderRadius: BorderRadius.circular(20),
+                                      child: Container(
+                                        decoration: BoxDecoration(
+                                          borderRadius: BorderRadius.circular(
+                                            20,
+                                          ),
+                                          border: Border.all(
+                                            color: Colors.white24,
+                                          ),
+                                        ),
+                                        child: ListTile(
+                                          leading: Container(
+                                            padding: const EdgeInsets.all(10),
+                                            decoration: BoxDecoration(
+                                              color: Colors.green.withOpacity(
+                                                0.2,
+                                              ),
+                                              shape: BoxShape.circle,
+                                            ),
+                                            child: const Icon(
+                                              Icons.phone_android,
+                                              color: Colors.greenAccent,
+                                            ),
+                                          ),
+                                          title: Text(
+                                            device.name,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                          subtitle: Text(
+                                            device.ip,
+                                            style: const TextStyle(
+                                              color: Colors.white70,
+                                            ),
+                                          ),
+                                          trailing: const Icon(
+                                            Icons.arrow_forward_ios,
+                                            color: Colors.white70,
+                                          ),
+                                          onTap: () {
+                                            Navigator.push(
+                                              context,
+                                              MaterialPageRoute(
+                                                builder: (_) => SendFileScreen(
+                                                  deviceName: device.name,
+                                                  deviceIp: device.ip,
+                                                ),
+                                              ),
+                                            );
+                                          },
                                         ),
                                       ),
-                                    );
-                                  },
-                                ),
-                              );
-                            },
-                          ),
+                                    ),
+                                  );
+                                },
+                              ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+          ),
+        ),
       ),
     );
   }
