@@ -139,16 +139,17 @@ class _ProgressScreenState extends State<ProgressScreen> {
       ),
       body: Padding(
         padding: const EdgeInsets.all(24),
-        child: ValueListenableBuilder<int>(
-          valueListenable: transferService.transferredBytes,
-          builder: (context, transferred, _) {
+        child: ValueListenableBuilder<bool>(
+          valueListenable: transferService.transferRunning,
+          builder: (context, running, _) {
+            final transferred = transferService.transferredBytes.value;
             final total = transferService.totalBytes.value;
 
             final progress = total == 0 ? 0.0 : transferred / total;
 
             final remaining = (total - transferred).clamp(0, total);
 
-            if (!transferService.transferRunning.value) {
+            if (!running) {
               return buildResultScreen();
             }
 

@@ -3,7 +3,7 @@ import 'package:file_picker/file_picker.dart';
 import '../services/file_transfer_service.dart';
 import 'progress_screen.dart';
 import '../models/transfer_file.dart';
-import '../models/transfer_file.dart';
+import 'dart:io';
 
 class SendFileScreen extends StatefulWidget {
   final String deviceName;
@@ -37,7 +37,12 @@ class _SendFileScreenState extends State<SendFileScreen> {
       if (file.path == null) continue;
 
       files.add(
-        TransferFile(name: file.name, path: file.path!, size: file.size),
+        TransferFile(
+          name: file.name,
+          path: file.path!,
+          size: file.size,
+          relativePath: file.name,
+        ),
       );
     }
 
@@ -78,6 +83,40 @@ class _SendFileScreenState extends State<SendFileScreen> {
         });
       }
     }
+  }
+
+  Future<void> pickFolder() async {
+    final folderPath = await FilePicker.platform.getDirectoryPath();
+
+    if (folderPath == null) return;
+
+    final root = Directory(folderPath);
+
+    final files = <TransferFile>[];
+
+    await for (final entity in root.list(recursive: true)) {
+      if (entity is File) {
+        final relative = entity.path
+            .substring(folderPath.length + 1)
+            .replaceAll('\\', '/');
+
+        files.add(
+          TransferFile(
+            name: entity.uri.pathSegments.last,
+            path: entity.path,
+            size: await entity.length(),
+            relativePath: relative,
+          ),
+        );
+        for (final file in files) {
+          print(file.relativePath);
+        }
+      }
+    }
+
+    setState(() {
+      selectedFiles = files;
+    });
   }
 
   @override
@@ -150,6 +189,13 @@ class _SendFileScreenState extends State<SendFileScreen> {
                   child: ElevatedButton(
                     onPressed: isSending ? null : pickFile,
                     child: const Text('Select File'),
+                  ),
+                ),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: isSending ? null : pickFolder,
+                    child: const Text('Select Folder'),
                   ),
                 ),
 

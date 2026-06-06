@@ -221,6 +221,8 @@ class FileTransferService {
 
       print('SHA256: $hash');
 
+      final currentFile = currentQueueFile;
+
       final jsonPacket = jsonEncode({
         'name': fileName,
         'size': fileSize,
@@ -228,6 +230,7 @@ class FileTransferService {
         'batch': _batchTransfer,
         'fileIndex': currentFileNumber,
         'totalFiles': totalFilesInQueue,
+        'relativePath': currentFile?.relativePath ?? fileName,
       });
 
       final framed = ProtocolService.createPacket(
@@ -278,6 +281,7 @@ class FileTransferService {
           }
 
           if (packet.type == 'transfer_ack') {
+            print('TRANSFER_ACK RECEIVED');
             print('TRANSFER VERIFIED');
 
             transferredBytes.value = totalBytes.value;
@@ -299,8 +303,10 @@ class FileTransferService {
               transferResult.value = TransferResult.success;
 
               transferRunning.value = false;
+              transferredBytes.value++;
 
               sending.value = false;
+              print("SETTING SUCCESS STATE");
             }
 
             continue;
@@ -368,7 +374,7 @@ class FileTransferService {
     }
 
     print(
-      'STARTING NEXT FILE ${currentFileNumber}/$totalFilesInQueue : ${file.name}',
+      'STARTING NEXT FILE $currentFileNumber/$totalFilesInQueue : ${file.name}',
     );
 
     await sendFileOffer(

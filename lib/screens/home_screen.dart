@@ -9,7 +9,6 @@ import 'package:path_provider/path_provider.dart';
 import '../services/download_path_service.dart';
 import 'progress_screen.dart';
 import 'package:flutter_file_dialog/flutter_file_dialog.dart';
-import 'dart:typed_data';
 
 import '../models/discovered_device.dart';
 import '../services/device_info_service.dart';
@@ -20,6 +19,13 @@ class HomeScreen extends StatefulWidget {
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class ReceivedBatchFile {
+  final File file;
+  final String relativePath;
+
+  ReceivedBatchFile({required this.file, required this.relativePath});
 }
 
 class _HomeScreenState extends State<HomeScreen> {
@@ -39,8 +45,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   RandomAccessFile? receivingFile;
   File? receivingTempFile;
-  List<File> batchFilesToSave = [];
+  List<ReceivedBatchFile> batchFilesToSave = [];
   int receivedSize = 0;
+  String? incomingRelativePath;
   DateTime? receiveStartTime;
   Future<void> _writeQueue = Future.value();
 
@@ -131,17 +138,24 @@ class _HomeScreenState extends State<HomeScreen> {
     if (folderPath == null) {
       return;
     }
+    print("FILES TO SAVE = ${batchFilesToSave.length}");
 
-    for (final file in batchFilesToSave) {
-      final fileName = file.uri.pathSegments.last;
+    for (final item in batchFilesToSave) {
+      print("SAVE: ${item.relativePath}");
 
-      File destination = File('$folderPath/$fileName');
+      final safePath = item.relativePath.replaceAll('\\', '/');
 
-      destination = await getUniqueFile(destination);
+      final destination = File('$folderPath/$safePath');
+      await destination.parent.create(recursive: true);
 
-      await file.copy(destination.path);
-
-      await file.delete();
+      await item.file.copy(destination.path);
+      await Future.delayed(const Duration(milliseconds: 100));
+      try {
+        print(receivingFile);
+        await item.file.delete();
+      } catch (e) {
+        print('TEMP DELETE FAILED: $e');
+      }
     }
 
     batchFilesToSave.clear();
@@ -192,6 +206,47 @@ class _HomeScreenState extends State<HomeScreen> {
     if (packet['type'] == 'file_start') {
       transferService.setReceivingState();
       transferService.transferStatus.value = 'Receiving File...';
+
+      if (incomingFileSize == 0) {
+        print('ZERO BYTE FILE');
+
+        await receivingFile?.flush();
+
+        final actualHash = await HashService.calculateSha256(
+          receivingTempFile!.path,
+        );
+
+        if (actualHash != expectedHash) {
+          transferService.transferResult.value = TransferResult.failed;
+          return;
+        }
+
+        await transferService.sendTransferAck();
+
+        if (batchAccepted) {
+          batchFilesToSave.add(
+            ReceivedBatchFile(
+              file: receivingTempFile!,
+              relativePath: incomingRelativePath!,
+            ),
+          );
+          print(
+            "BATCH ADD: ${incomingRelativePath} "
+            "COUNT=${batchFilesToSave.length + 1}",
+          );
+
+          if (currentBatchFile == totalBatchFiles) {
+            await saveBatchFilesToFolder();
+
+            transferService.transferRunning.value = false;
+
+            batchAccepted = false;
+          }
+        } else {
+          await saveReceivedFile();
+        }
+      }
+
       return;
     }
     if (packet['type'] == 'cancel_transfer') {
@@ -200,6 +255,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     incomingFileName = packet['name'];
+    incomingRelativePath = packet['relativePath'];
     expectedHash = packet['sha256'];
     incomingFileSize = packet['size'];
 
@@ -371,6 +427,8 @@ class _HomeScreenState extends State<HomeScreen> {
         final receiveEndTime = DateTime.now();
         transferService.transferStatus.value = 'Verifying File...';
         await receivingFile!.flush();
+        await receivingFile!.close();
+        receivingFile = null;
 
         print('VERIFY FILE: ${receivingTempFile?.path}');
         print('SIZE: $receivedSize');
@@ -396,6 +454,7 @@ class _HomeScreenState extends State<HomeScreen> {
             receiveEndTime.difference(receiveStartTime!).inMilliseconds / 1000;
 
         transferService.transferResult.value = TransferResult.success;
+        print('SENDING TRANSFER ACK');
 
         await transferService.sendTransferAck();
 
@@ -414,7 +473,16 @@ class _HomeScreenState extends State<HomeScreen> {
         );
 
         if (batchAccepted) {
-          batchFilesToSave.add(receivingTempFile!);
+          batchFilesToSave.add(
+            ReceivedBatchFile(
+              file: receivingTempFile!,
+              relativePath: incomingRelativePath!,
+            ),
+          );
+          print(
+            "BATCH ADD: ${incomingRelativePath} "
+            "COUNT=${batchFilesToSave.length + 1}",
+          );
 
           if (currentBatchFile == totalBatchFiles) {
             print('LAST FILE RECEIVED');
