@@ -45,6 +45,32 @@ class _ProgressScreenState extends State<ProgressScreen> {
     return '$bytes B';
   }
 
+  IconData getFileIcon(String fileName) {
+    final name = fileName.toLowerCase();
+
+    if (name.endsWith('.pdf')) return Icons.picture_as_pdf;
+
+    if (name.endsWith('.jpg') ||
+        name.endsWith('.jpeg') ||
+        name.endsWith('.png')) {
+      return Icons.image;
+    }
+
+    if (name.endsWith('.mp4') || name.endsWith('.mkv')) {
+      return Icons.movie;
+    }
+
+    if (name.endsWith('.mp3')) {
+      return Icons.music_note;
+    }
+
+    if (name.endsWith('.zip') || name.endsWith('.rar')) {
+      return Icons.archive;
+    }
+
+    return Icons.insert_drive_file;
+  }
+
   Widget buildProgressCircle(double progress) {
     return SizedBox(
       width: 220,
@@ -52,16 +78,24 @@ class _ProgressScreenState extends State<ProgressScreen> {
       child: Stack(
         alignment: Alignment.center,
         children: [
-          SizedBox(
+          Container(
             width: 220,
             height: 220,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.cyanAccent.withOpacity(0.35),
+                  blurRadius: 30,
+                  spreadRadius: 5,
+                ),
+              ],
+            ),
             child: CircularProgressIndicator(
               value: progress,
               strokeWidth: 12,
               backgroundColor: Colors.white12,
-              valueColor: const AlwaysStoppedAnimation<Color>(
-                Colors.cyanAccent,
-              ),
+              valueColor: const AlwaysStoppedAnimation(Colors.cyanAccent),
             ),
           ),
 
@@ -386,13 +420,28 @@ class _ProgressScreenState extends State<ProgressScreen> {
                               color: Colors.white.withOpacity(0.05),
                               borderRadius: BorderRadius.circular(12),
                             ),
-                            child: Text(
-                              transferService.fileName.value,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                              ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  getFileIcon(transferService.fileName.value),
+                                  color: Colors.white,
+                                ),
+
+                                const SizedBox(width: 10),
+
+                                Flexible(
+                                  child: Text(
+                                    transferService.fileName.value,
+                                    overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.center,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
 

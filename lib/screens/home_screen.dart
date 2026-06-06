@@ -326,77 +326,171 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     showDialog(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          title: Text(
-            batch ? 'Incoming Files ($fileIndex/$totalFiles)' : 'Incoming File',
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (batch) Text('File $fileIndex of $totalFiles'),
-
-              Text(packet['name']),
-              const SizedBox(height: 10),
-              Text('${packet['size']} bytes'),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () async {
-                Navigator.pop(context);
-
-                await transferService.sendReject();
-              },
-              child: const Text('Reject'),
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: const Color(0xFF0A2A5E),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: Colors.white.withOpacity(0.15)),
             ),
-            ElevatedButton(
-              onPressed: () async {
-                Navigator.pop(context);
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.file_download,
+                  size: 60,
+                  color: Colors.cyanAccent,
+                ),
 
-                if (batch) {
-                  batchAccepted = true;
-                }
+                const SizedBox(height: 15),
 
-                receivedSize = 0;
-                receiveStartTime = DateTime.now();
-
-                final tempDir = await getTemporaryDirectory();
-
-                File tempFile = File('${tempDir.path}/$incomingFileName');
-
-                tempFile = await getUniqueFile(tempFile);
-
-                incomingFileName = tempFile.uri.pathSegments.last;
-
-                receivingTempFile = tempFile;
-
-                receivingFile = await tempFile.open(mode: FileMode.write);
-                transferService.fileName.value = incomingFileName!;
-
-                transferService.totalBytes.value = incomingFileSize!;
-
-                transferService.transferredBytes.value = 0;
-
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => ProgressScreen(
-                      isSending: false,
-                      fromDevice: 'Remote Device',
-                      toDevice: deviceInfo!['name']!,
-                    ),
+                Text(
+                  batch ? 'Incoming Files' : 'Incoming File',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
                   ),
-                );
+                ),
 
-                transferService.sendAccept();
-              },
-              child: const Text('Accept'),
+                const SizedBox(height: 20),
+
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.05),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    children: [
+                      if (batch)
+                        Text(
+                          '$fileIndex of $totalFiles Files',
+                          style: const TextStyle(
+                            color: Colors.cyanAccent,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+
+                      if (batch) const SizedBox(height: 8),
+
+                      Text(
+                        packet['name'],
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+
+                      const SizedBox(height: 8),
+
+                      Text(
+                        formatBytes(packet['size']),
+                        style: const TextStyle(color: Colors.white70),
+                      ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 24),
+
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () async {
+                          Navigator.pop(context);
+
+                          await transferService.sendReject();
+                        },
+                        child: const Text('Reject'),
+                      ),
+                    ),
+
+                    const SizedBox(width: 10),
+
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          Navigator.pop(context);
+
+                          if (batch) {
+                            batchAccepted = true;
+                          }
+
+                          receivedSize = 0;
+                          receiveStartTime = DateTime.now();
+
+                          final tempDir = await getTemporaryDirectory();
+
+                          File tempFile = File(
+                            '${tempDir.path}/$incomingFileName',
+                          );
+
+                          tempFile = await getUniqueFile(tempFile);
+
+                          incomingFileName = tempFile.uri.pathSegments.last;
+
+                          receivingTempFile = tempFile;
+
+                          receivingFile = await tempFile.open(
+                            mode: FileMode.write,
+                          );
+
+                          transferService.fileName.value = incomingFileName!;
+
+                          transferService.totalBytes.value = incomingFileSize!;
+
+                          transferService.transferredBytes.value = 0;
+
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => ProgressScreen(
+                                isSending: false,
+                                fromDevice: 'Remote Device',
+                                toDevice: deviceInfo!['name']!,
+                              ),
+                            ),
+                          );
+
+                          transferService.sendAccept();
+                        },
+                        child: const Text('Accept'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
-          ],
+          ),
         );
       },
     );
+  }
+
+  String formatBytes(int bytes) {
+    const double kb = 1024;
+    const double mb = kb * 1024;
+    const double gb = mb * 1024;
+
+    if (bytes >= gb) {
+      return '${(bytes / gb).toStringAsFixed(2)} GB';
+    }
+
+    if (bytes >= mb) {
+      return '${(bytes / mb).toStringAsFixed(2)} MB';
+    }
+
+    if (bytes >= kb) {
+      return '${(bytes / kb).toStringAsFixed(2)} KB';
+    }
+
+    return '$bytes B';
   }
 
   Future<void> handleTransferCancelled() async {
