@@ -45,81 +45,160 @@ class _ProgressScreenState extends State<ProgressScreen> {
     return '$bytes B';
   }
 
+  Widget buildProgressCircle(double progress) {
+    return SizedBox(
+      width: 220,
+      height: 220,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          SizedBox(
+            width: 220,
+            height: 220,
+            child: CircularProgressIndicator(
+              value: progress,
+              strokeWidth: 12,
+              backgroundColor: Colors.white12,
+              valueColor: const AlwaysStoppedAnimation<Color>(
+                Colors.cyanAccent,
+              ),
+            ),
+          ),
+
+          Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '${(progress * 100).toStringAsFixed(1)}%',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 34,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+
+                const SizedBox(height: 6),
+
+                const Text('Progress', style: TextStyle(color: Colors.white70)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget buildResultScreen() {
     final result = transferService.transferResult.value;
 
     String title;
-
     IconData icon;
+    Color iconColor;
 
     if (result == TransferResult.success) {
       title = 'Transfer Completed';
       icon = Icons.check_circle;
+      iconColor = Colors.greenAccent;
     } else if (result == TransferResult.cancelled) {
       title = 'Transfer Cancelled';
       icon = Icons.cancel;
+      iconColor = Colors.orangeAccent;
     } else {
       title = 'Transfer Failed';
       icon = Icons.error;
+      iconColor = Colors.redAccent;
     }
 
     return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 80),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 500),
+        padding: const EdgeInsets.all(30),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: Colors.white.withOpacity(0.15)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 120,
+              height: 120,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: iconColor.withOpacity(0.15),
+              ),
+              child: Icon(icon, size: 70, color: iconColor),
+            ),
 
-          const SizedBox(height: 20),
+            const SizedBox(height: 25),
 
-          Text(
-            title,
-            style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-          ),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 30,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
 
-          const SizedBox(height: 20),
-          ValueListenableBuilder<int>(
-            valueListenable: transferService.currentQueueIndex,
-            builder: (context, current, _) {
-              return ValueListenableBuilder<int>(
-                valueListenable: transferService.totalQueueFiles,
-                builder: (context, total, _) {
-                  return Text(
-                    'File $current of $total',
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  );
+            const SizedBox(height: 20),
+
+            ValueListenableBuilder<int>(
+              valueListenable: transferService.currentQueueIndex,
+              builder: (context, current, _) {
+                return ValueListenableBuilder<int>(
+                  valueListenable: transferService.totalQueueFiles,
+                  builder: (context, total, _) {
+                    return Text(
+                      '$current of $total files',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 18,
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+
+            const SizedBox(height: 12),
+
+            Text(
+              transferService.fileName.value,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white70, fontSize: 16),
+            ),
+
+            const SizedBox(height: 30),
+
+            SizedBox(
+              width: double.infinity,
+              height: 55,
+              child: ElevatedButton(
+                onPressed: () {
+                  Navigator.of(context).popUntil((route) => route.isFirst);
                 },
-              );
-            },
-          ),
+                child: const Text('Back To Home'),
+              ),
+            ),
 
-          const SizedBox(height: 10),
+            const SizedBox(height: 12),
 
-          Text(
-            transferService.fileName.value,
-            style: const TextStyle(fontSize: 18),
-          ),
-
-          const SizedBox(height: 40),
-
-          ElevatedButton(
-            onPressed: () {
-              Navigator.of(context).popUntil((route) => route.isFirst);
-            },
-            child: const Text('Back To Home'),
-          ),
-
-          const SizedBox(height: 10),
-
-          ElevatedButton(
-            onPressed: () {
-              Navigator.of(context).pop();
-            },
-            child: const Text('Send More Files'),
-          ),
-        ],
+            SizedBox(
+              width: double.infinity,
+              height: 55,
+              child: ElevatedButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+                child: const Text('Send More Files'),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -127,110 +206,260 @@ class _ProgressScreenState extends State<ProgressScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
-        automaticallyImplyLeading: false,
-        leading: IconButton(
-          icon: const Icon(Icons.home),
-          onPressed: () {
-            Navigator.of(context).popUntil((route) => route.isFirst);
-          },
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+
+        leading: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Container(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white.withOpacity(0.08),
+              border: Border.all(color: Colors.white.withOpacity(0.15)),
+            ),
+            child: IconButton(
+              icon: const Icon(Icons.home, color: Colors.white),
+              onPressed: () {
+                Navigator.of(context).popUntil((route) => route.isFirst);
+              },
+            ),
+          ),
         ),
-        title: Text(widget.isSending ? 'Sending File' : 'Receiving File'),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: ValueListenableBuilder<int>(
-          valueListenable: transferService.transferredBytes,
-          builder: (context, _, __) {
-            final transferred = transferService.transferredBytes.value;
-            final total = transferService.totalBytes.value;
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF081B3A), Color(0xFF0A2A5E), Color(0xFF1565C0)],
+          ),
+        ),
 
-            final progress = total == 0 ? 0.0 : transferred / total;
+        child: Padding(
+          padding: const EdgeInsets.all(24),
 
-            final remaining = (total - transferred).clamp(0, total);
+          child: ValueListenableBuilder<int>(
+            valueListenable: transferService.transferredBytes,
 
-            if (!transferService.transferRunning.value) {
-              return buildResultScreen();
-            }
+            builder: (context, _, __) {
+              final transferred = transferService.transferredBytes.value;
+              final total = transferService.totalBytes.value;
 
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  transferService.fileName.value,
-                  style: const TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+              final progress = total == 0 ? 0.0 : transferred / total;
 
-                const SizedBox(height: 30),
+              final remaining = (total - transferred).clamp(0, total);
 
-                Text('From: ${widget.fromDevice}'),
+              if (!transferService.transferRunning.value) {
+                return buildResultScreen();
+              }
 
-                const SizedBox(height: 10),
+              return SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    ValueListenableBuilder<int>(
+                      valueListenable: transferService.currentQueueIndex,
+                      builder: (context, current, _) {
+                        return ValueListenableBuilder<int>(
+                          valueListenable: transferService.totalQueueFiles,
+                          builder: (context, total, _) {
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'File $current of $total',
+                                  style: const TextStyle(
+                                    color: Colors.cyanAccent,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
 
-                Text('To: ${widget.toDevice}'),
+                                const SizedBox(height: 10),
 
-                const SizedBox(height: 25),
-
-                Text('File Size: ${formatBytes(total)}'),
-
-                const SizedBox(height: 10),
-
-                Text('Transferred: ${formatBytes(transferred)}'),
-
-                const SizedBox(height: 10),
-
-                Text('Remaining: ${formatBytes(remaining)}'),
-                const SizedBox(height: 10),
-
-                ValueListenableBuilder<String>(
-                  valueListenable: transferService.transferSpeed,
-                  builder: (context, speed, _) {
-                    return Text('Speed: $speed');
-                  },
-                ),
-
-                ValueListenableBuilder<String>(
-                  valueListenable: transferService.transferStatus,
-                  builder: (context, status, _) {
-                    return Text(
-                      status,
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    );
-                  },
-                ),
-
-                const SizedBox(height: 20),
-
-                const SizedBox(height: 30),
-
-                LinearProgressIndicator(value: progress, minHeight: 12),
-                const SizedBox(height: 15),
-
-                Center(
-                  child: Text(
-                    '${(progress * 100).toStringAsFixed(1)}%',
-                    style: const TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
+                                Text(
+                                  transferService.fileName.value,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 24,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        );
+                      },
                     ),
-                  ),
+
+                    const SizedBox(height: 20),
+
+                    Text(
+                      'From: ${widget.fromDevice}',
+                      style: const TextStyle(color: Colors.white),
+                    ),
+
+                    const SizedBox(height: 8),
+
+                    Text(
+                      'To: ${widget.toDevice}',
+                      style: const TextStyle(color: Colors.white),
+                    ),
+
+                    const SizedBox(height: 8),
+
+                    Text(
+                      'File Size: ${formatBytes(total)}',
+                      style: const TextStyle(color: Colors.white),
+                    ),
+
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 20),
+                      child: Center(child: buildProgressCircle(progress)),
+                    ),
+                    const SizedBox(height: 20),
+
+                    ValueListenableBuilder<int>(
+                      valueListenable: transferService.currentQueueIndex,
+                      builder: (context, current, _) {
+                        return ValueListenableBuilder<int>(
+                          valueListenable: transferService.totalQueueFiles,
+                          builder: (context, total, _) {
+                            final queueProgress = total == 0
+                                ? 0.0
+                                : current / total;
+
+                            return Column(
+                              children: [
+                                const Text(
+                                  'Queue Progress',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+
+                                const SizedBox(height: 10),
+
+                                LinearProgressIndicator(
+                                  value: queueProgress,
+                                  minHeight: 8,
+                                  backgroundColor: Colors.white12,
+                                  valueColor: const AlwaysStoppedAnimation(
+                                    Colors.cyanAccent,
+                                  ),
+                                ),
+
+                                const SizedBox(height: 8),
+
+                                Text(
+                                  '$current / $total Files',
+                                  style: const TextStyle(color: Colors.white70),
+                                ),
+                              ],
+                            );
+                          },
+                        );
+                      },
+                    ),
+
+                    const SizedBox(height: 30),
+
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.08),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: Colors.white.withOpacity(0.15),
+                        ),
+                      ),
+                      child: Column(
+                        children: [
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.05),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              transferService.fileName.value,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+
+                          const SizedBox(height: 15),
+                          Text(
+                            'Transferred: ${formatBytes(transferred)}',
+                            style: const TextStyle(color: Colors.white),
+                          ),
+
+                          const SizedBox(height: 10),
+
+                          Text(
+                            'Remaining: ${formatBytes(remaining)}',
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+
+                          const SizedBox(height: 10),
+
+                          ValueListenableBuilder<String>(
+                            valueListenable: transferService.transferSpeed,
+                            builder: (context, speed, _) {
+                              return Text(
+                                'Speed: $speed',
+                                style: const TextStyle(
+                                  color: Colors.cyanAccent,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              );
+                            },
+                          ),
+
+                          const SizedBox(height: 10),
+
+                          ValueListenableBuilder<String>(
+                            valueListenable: transferService.transferStatus,
+                            builder: (context, status, _) {
+                              return Text(
+                                status,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    SizedBox(
+                      width: double.infinity,
+                      height: 55,
+                      child: ElevatedButton.icon(
+                        icon: const Icon(Icons.close),
+                        label: const Text('Cancel Transfer'),
+                        onPressed: () async {
+                          await transferService.cancelTransfer();
+                        },
+                      ),
+                    ),
+                  ],
                 ),
-                ElevatedButton.icon(
-                  icon: const Icon(Icons.close),
-                  label: const Text('Cancel Transfer'),
-                  onPressed: () async {
-                    await transferService.cancelTransfer();
-                  },
-                ),
-              ],
-            );
-          },
+              );
+            },
+          ),
         ),
       ),
     );
