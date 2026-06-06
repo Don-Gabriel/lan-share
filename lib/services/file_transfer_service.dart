@@ -337,6 +337,8 @@ class FileTransferService {
           }
 
           if (packet.type == 'reject') {
+            print('TRANSFER REJECTED');
+
             _offerTimeout?.cancel();
 
             transferResult.value = TransferResult.failed;
@@ -344,6 +346,8 @@ class FileTransferService {
             transferRunning.value = false;
 
             sending.value = false;
+
+            transferredBytes.value++;
 
             continue;
           }

@@ -186,12 +186,6 @@ class _ProgressScreenState extends State<ProgressScreen> {
                 const SizedBox(height: 10),
 
                 ValueListenableBuilder<String>(
-                  valueListenable: transferService.eta,
-                  builder: (context, eta, _) {
-                    return Text('ETA: $eta');
-                  },
-                ),
-                ValueListenableBuilder<String>(
                   valueListenable: transferService.transferSpeed,
                   builder: (context, speed, _) {
                     return Text('Speed: $speed');
