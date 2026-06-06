@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'dart:async';
+import 'foreground_service.dart';
 import 'hash_service.dart';
 import 'dart:typed_data';
 import 'protocol_service.dart';

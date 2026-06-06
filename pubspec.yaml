@@ -33,6 +33,7 @@ dependencies:
   device_info_plus: ^11.5.0
   network_info_plus: ^6.1.4
   flutter_file_dialog: ^3.0.2
+  flutter_foreground_task: ^9.1.0
   crypto: ^3.0.6
   filesystem_picker: ^4.1.0
 

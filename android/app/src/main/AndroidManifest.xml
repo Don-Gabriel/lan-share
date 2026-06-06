@@ -9,11 +9,17 @@
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
     <application
         android:label="lan_share"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+
+        <service
+    android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+    android:foregroundServiceType="dataSync"
+    android:exported="false" />
 
         <activity
             android:name=".MainActivity"
