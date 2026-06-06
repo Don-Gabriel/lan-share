@@ -161,6 +161,8 @@ class _HomeScreenState extends State<HomeScreen> {
     batchFilesToSave.clear();
 
     print('ALL FILES SAVED');
+    transferService.transferResult.value = TransferResult.success;
+    transferService.transferRunning.value = false;
   }
 
   Future<void> loadDeviceInfo() async {
@@ -238,8 +240,6 @@ class _HomeScreenState extends State<HomeScreen> {
           if (currentBatchFile == totalBatchFiles) {
             await saveBatchFilesToFolder();
 
-            transferService.transferRunning.value = false;
-
             batchAccepted = false;
           }
         } else {
@@ -264,6 +264,8 @@ class _HomeScreenState extends State<HomeScreen> {
     final int totalFiles = packet['totalFiles'] ?? 1;
     currentBatchFile = fileIndex;
     totalBatchFiles = totalFiles;
+    transferService.currentQueueIndex.value = fileIndex;
+    transferService.totalQueueFiles.value = totalFiles;
 
     print(
       'BATCH=$batch FILE=$fileIndex/$totalFiles batchAccepted=$batchAccepted',
@@ -295,6 +297,9 @@ class _HomeScreenState extends State<HomeScreen> {
       if (batch) {
         batchAccepted = true;
       }
+
+      transferService.currentQueueIndex.value = fileIndex;
+      transferService.totalQueueFiles.value = totalFiles;
 
       transferService.sendAccept();
 
@@ -410,9 +415,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       receivedSize += data.length;
 
-      if (receivedSize % (1024 * 1024) < data.length) {
-        transferService.sendProgress(receivedSize);
-      }
+      await transferService.sendProgress(receivedSize);
 
       transferService.updateReceiveProgress(
         receivedSize,
@@ -453,7 +456,9 @@ class _HomeScreenState extends State<HomeScreen> {
         final seconds =
             receiveEndTime.difference(receiveStartTime!).inMilliseconds / 1000;
 
-        transferService.transferResult.value = TransferResult.success;
+        if (!batchAccepted) {
+          transferService.transferResult.value = TransferResult.success;
+        }
         print('SENDING TRANSFER ACK');
 
         await transferService.sendTransferAck();
@@ -488,8 +493,6 @@ class _HomeScreenState extends State<HomeScreen> {
             print('LAST FILE RECEIVED');
 
             await saveBatchFilesToFolder();
-
-            transferService.transferRunning.value = false;
 
             batchAccepted = false;
           }

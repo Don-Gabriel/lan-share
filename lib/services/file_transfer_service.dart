@@ -145,12 +145,17 @@ class FileTransferService {
         onDone: () {
           print('Client disconnected');
 
-          closeConnection();
+          _activeSocket = null;
         },
         onError: (e) {
           print('Socket error: $e');
 
-          closeConnection();
+          transferResult.value = TransferResult.failed;
+          transferRunning.value = false;
+          sending.value = false;
+
+          _activeSocket?.destroy();
+          _activeSocket = null;
         },
       );
     });
@@ -274,6 +279,8 @@ class FileTransferService {
 
             final progressData =
                 jsonDecode(progressJson) as Map<String, dynamic>;
+
+            print('PROGRESS PACKET: ${progressData['received']}');
 
             transferredBytes.value = progressData['received'];
 
@@ -469,6 +476,8 @@ class FileTransferService {
       }
 
       transferred += chunk.length;
+      transferredBytes.value = transferred;
+      totalBytes.value = totalSize;
 
       final elapsedSeconds = DateTime.now()
           .difference(_transferStartTime!)
@@ -601,9 +610,6 @@ class FileTransferService {
 
     sending.value = false;
 
-    transferredBytes.value = 0;
-
-    totalBytes.value = 0;
     transferStatus.value = '';
     _state = TransferState.idle;
   }
