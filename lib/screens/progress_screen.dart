@@ -191,6 +191,12 @@ class _ProgressScreenState extends State<ProgressScreen> {
                     return Text('ETA: $eta');
                   },
                 ),
+                ValueListenableBuilder<String>(
+                  valueListenable: transferService.transferSpeed,
+                  builder: (context, speed, _) {
+                    return Text('Speed: $speed');
+                  },
+                ),
 
                 ValueListenableBuilder<String>(
                   valueListenable: transferService.transferStatus,

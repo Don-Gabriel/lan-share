@@ -155,30 +155,27 @@ class _SendFileScreenState extends State<SendFileScreen> {
 
                 const SizedBox(height: 10),
 
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    border: Border.all(),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (selectedFiles.isEmpty)
-                        const Text('No files selected')
-                      else
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: selectedFiles.map((file) {
-                            return Padding(
-                              padding: const EdgeInsets.only(bottom: 4),
-                              child: Text(file.name),
-                            );
-                          }).toList(),
-                        ),
-                    ],
+                Expanded(
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      border: Border.all(),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: selectedFiles.isEmpty
+                        ? const Text('No files selected')
+                        : ListView.builder(
+                            itemCount: selectedFiles.length,
+                            itemBuilder: (context, index) {
+                              final file = selectedFiles[index];
+
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 4),
+                                child: Text(file.name),
+                              );
+                            },
+                          ),
                   ),
                 ),
 

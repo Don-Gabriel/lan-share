@@ -39,6 +39,7 @@ class FileTransferService {
   ValueNotifier<int> transferredBytes = ValueNotifier(0);
 
   ValueNotifier<String> eta = ValueNotifier('--');
+  ValueNotifier<String> transferSpeed = ValueNotifier('--');
 
   ValueNotifier<int> totalBytes = ValueNotifier(0);
 
@@ -194,6 +195,7 @@ class FileTransferService {
       _transferStartTime = DateTime.now();
 
       eta.value = '--';
+      transferSpeed.value = '--';
       _pendingFilePath = filePath;
 
       this.fileName.value = fileName;
@@ -491,6 +493,9 @@ class FileTransferService {
         final etaSeconds = (remainingBytes / bytesPerSecond).round();
 
         eta.value = formatEta(etaSeconds);
+
+        transferSpeed.value =
+            '${(bytesPerSecond / 1024 / 1024).toStringAsFixed(2)} MB/s';
       }
 
       if (transferred % (10 * 1024 * 1024) < chunk.length) {

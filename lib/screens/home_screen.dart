@@ -96,14 +96,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> saveReceivedFile() async {
-    if (receivingFile == null) return;
+    print('saveReceivedFile START');
 
-    final tempPath = receivingFile!.path;
+    if (receivingTempFile == null) return;
 
-    await receivingFile!.flush();
-    await receivingFile!.close();
-
-    receivingFile = null;
+    final tempPath = receivingTempFile!.path;
 
     if (Platform.isAndroid) {
       final params = SaveFileDialogParams(
@@ -111,7 +108,9 @@ class _HomeScreenState extends State<HomeScreen> {
         fileName: incomingFileName,
       );
 
-      await FlutterFileDialog.saveFile(params: params);
+      final savePath = await FlutterFileDialog.saveFile(params: params);
+
+      print('SAVE PATH = $savePath');
     } else if (Platform.isWindows) {
       final downloadsPath = await DownloadPathService().getDownloadPath();
 
@@ -415,6 +414,19 @@ class _HomeScreenState extends State<HomeScreen> {
 
       receivedSize += data.length;
 
+      if (receiveStartTime != null) {
+        final elapsedSeconds = DateTime.now()
+            .difference(receiveStartTime!)
+            .inSeconds;
+
+        if (elapsedSeconds > 0) {
+          final bytesPerSecond = receivedSize / elapsedSeconds;
+
+          transferService.transferSpeed.value =
+              '${(bytesPerSecond / 1024 / 1024).toStringAsFixed(2)} MB/s';
+        }
+      }
+
       await transferService.sendProgress(receivedSize);
 
       transferService.updateReceiveProgress(
@@ -497,7 +509,11 @@ class _HomeScreenState extends State<HomeScreen> {
             batchAccepted = false;
           }
         } else {
+          print('CALLING saveReceivedFile()');
+
           await saveReceivedFile();
+
+          print('saveReceivedFile() FINISHED');
 
           receivingTempFile = null;
         }
