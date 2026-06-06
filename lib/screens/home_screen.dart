@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import '../services/hash_service.dart';
 import 'dart:async';
+import 'package:flutter/physics.dart';
+import 'dart:math' as math;
 import 'package:path_provider/path_provider.dart';
 import '../services/download_path_service.dart';
 import 'progress_screen.dart';
@@ -28,12 +30,14 @@ class ReceivedBatchFile {
   ReceivedBatchFile({required this.file, required this.relativePath});
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final DiscoveryService discovery = DiscoveryService();
   final FileTransferService transferService = FileTransferService();
 
   Map<String, String>? deviceInfo;
   Timer? _deviceCleanupTimer;
+  late AnimationController _radarController;
+  late AnimationController _starController;
   bool batchAccepted = false;
   int currentBatchFile = 0;
   int totalBatchFiles = 0;
@@ -54,6 +58,14 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _radarController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 4),
+    )..repeat();
+    _starController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 20),
+    )..repeat();
 
     loadDeviceInfo();
 
@@ -564,9 +576,285 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  Widget buildDeviceDot(String name) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.9, end: 1.15),
+      duration: const Duration(seconds: 2),
+      curve: Curves.easeInOut,
+      builder: (context, scale, child) {
+        return Column(
+          children: [
+            Stack(
+              alignment: Alignment.center,
+              children: [
+                Container(
+                  width: 44 * scale,
+                  height: 44 * scale,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.greenAccent.withOpacity(0.15),
+                  ),
+                ),
+
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 1200),
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.greenAccent,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.greenAccent.withOpacity(0.8),
+                        blurRadius: 30,
+                        spreadRadius: 8,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 8),
+
+            Text(
+              name,
+              style: const TextStyle(color: Colors.white, fontSize: 13),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget buildMyDeviceCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withOpacity(0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'My Device',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+
+          const SizedBox(height: 20),
+
+          Text(
+            deviceInfo!['name']!,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          Text(
+            deviceInfo!['ip']!,
+            style: const TextStyle(color: Colors.white70, fontSize: 16),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget buildOnlineDevicesPanel() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withOpacity(0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Online Devices (${devices.length})',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+
+          const SizedBox(height: 20),
+
+          Expanded(
+            child: ListView.builder(
+              itemCount: devices.length,
+              itemBuilder: (context, index) {
+                final device = devices[index];
+
+                return AnimatedPadding(
+                  duration: const Duration(milliseconds: 500),
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: ListTile(
+                      title: Text(
+                        device.name,
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                      subtitle: Text(
+                        device.ip,
+                        style: const TextStyle(color: Colors.white70),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget buildOnlineDevicesMobile() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withOpacity(0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Online Devices (${devices.length})',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+
+          const SizedBox(height: 15),
+
+          if (devices.isEmpty)
+            const Text('Searching...', style: TextStyle(color: Colors.white70)),
+
+          ...devices.map(
+            (device) => ListTile(
+              leading: const Icon(
+                Icons.circle,
+                color: Colors.greenAccent,
+                size: 14,
+              ),
+              title: Text(
+                device.name,
+                style: const TextStyle(color: Colors.white),
+              ),
+              subtitle: Text(
+                device.ip,
+                style: const TextStyle(color: Colors.white70),
+              ),
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => SendFileScreen(
+                      deviceName: device.name,
+                      deviceIp: device.ip,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget buildStars() {
+    return AnimatedBuilder(
+      animation: _starController,
+      builder: (context, child) {
+        return CustomPaint(
+          painter: StarPainter(offset: _starController.value),
+          size: Size.infinite,
+        );
+      },
+    );
+  }
+
+  Widget buildRadar() {
+    final size = MediaQuery.of(context).size;
+    final isDesktop = size.width > 900;
+    final radarSize = isDesktop ? 500.0 : size.width * 0.75;
+    final center = radarSize / 2;
+    return SizedBox(
+      height: radarSize,
+      width: radarSize,
+      child: AnimatedBuilder(
+        animation: _radarController,
+        builder: (context, child) {
+          return CustomPaint(
+            painter: RadarPainter(
+              sweepAngle: _radarController.value * 2 * math.pi,
+            ),
+            child: Stack(
+              children: [
+                for (int i = 0; i < devices.length; i++)
+                  Positioned(
+                    left:
+                        center +
+                        ((radarSize * 0.32) * math.cos((i + 1) * 1.2)) -
+                        20,
+                    top:
+                        center +
+                        ((radarSize * 0.32) * math.sin((i + 1) * 1.2)) -
+                        20,
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 600),
+                      opacity: 1,
+                      child: GestureDetector(
+                        onTap: () {
+                          final device = devices[i];
+
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => SendFileScreen(
+                                deviceName: device.name,
+                                deviceIp: device.ip,
+                              ),
+                            ),
+                          );
+                        },
+                        child: buildDeviceDot(devices[i].name),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   @override
   void dispose() {
     _deviceCleanupTimer?.cancel();
+    _radarController.dispose();
+    _starController.dispose();
 
     discovery.dispose();
 
@@ -585,148 +873,176 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
       extendBodyBehindAppBar: true,
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF081B3A), Color(0xFF0A2A5E), Color(0xFF1565C0)],
-          ),
-        ),
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: deviceInfo == null
-                ? const Center(
-                    child: CircularProgressIndicator(color: Colors.white),
-                  )
-                : Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'My Device',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
+      body: Stack(
+        children: [
+          buildStars(),
+          Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Color(0xFF081B3A),
+                  Color(0xFF0A2A5E),
+                  Color(0xFF1565C0),
+                ],
+              ),
+            ),
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: deviceInfo == null
+                    ? const Center(child: CircularProgressIndicator())
+                    : LayoutBuilder(
+                        builder: (context, constraints) {
+                          final isDesktop = constraints.maxWidth > 900;
 
-                      const SizedBox(height: 10),
+                          if (!isDesktop) {
+                            return SingleChildScrollView(
+                              child: Column(
+                                children: [
+                                  const SizedBox(height: 20),
 
-                      Text(
-                        'Name: ${deviceInfo!['name']}',
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 16,
-                        ),
-                      ),
+                                  Center(child: buildRadar()),
 
-                      Text(
-                        'IP: ${deviceInfo!['ip']}',
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 16,
-                        ),
-                      ),
+                                  const SizedBox(height: 30),
 
-                      const SizedBox(height: 30),
+                                  buildOnlineDevicesMobile(),
 
-                      Text(
-                        'Online Devices (${devices.length})',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
+                                  const SizedBox(height: 20),
 
-                      const SizedBox(height: 10),
+                                  buildMyDeviceCard(),
 
-                      Expanded(
-                        child: devices.isEmpty
-                            ? const Center(
-                                child: Text(
-                                  'Searching for devices...',
-                                  style: TextStyle(
-                                    color: Colors.white70,
-                                    fontSize: 16,
-                                  ),
-                                ),
-                              )
-                            : ListView.builder(
-                                itemCount: devices.length,
-                                itemBuilder: (context, index) {
-                                  final device = devices[index];
-
-                                  return Container(
-                                    margin: const EdgeInsets.only(bottom: 12),
-                                    child: Material(
-                                      color: Colors.white.withOpacity(0.08),
-                                      borderRadius: BorderRadius.circular(20),
-                                      child: Container(
-                                        decoration: BoxDecoration(
-                                          borderRadius: BorderRadius.circular(
-                                            20,
-                                          ),
-                                          border: Border.all(
-                                            color: Colors.white24,
-                                          ),
-                                        ),
-                                        child: ListTile(
-                                          leading: Container(
-                                            padding: const EdgeInsets.all(10),
-                                            decoration: BoxDecoration(
-                                              color: Colors.green.withOpacity(
-                                                0.2,
-                                              ),
-                                              shape: BoxShape.circle,
-                                            ),
-                                            child: const Icon(
-                                              Icons.phone_android,
-                                              color: Colors.greenAccent,
-                                            ),
-                                          ),
-                                          title: Text(
-                                            device.name,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                          subtitle: Text(
-                                            device.ip,
-                                            style: const TextStyle(
-                                              color: Colors.white70,
-                                            ),
-                                          ),
-                                          trailing: const Icon(
-                                            Icons.arrow_forward_ios,
-                                            color: Colors.white70,
-                                          ),
-                                          onTap: () {
-                                            Navigator.push(
-                                              context,
-                                              MaterialPageRoute(
-                                                builder: (_) => SendFileScreen(
-                                                  deviceName: device.name,
-                                                  deviceIp: device.ip,
-                                                ),
-                                              ),
-                                            );
-                                          },
-                                        ),
-                                      ),
-                                    ),
-                                  );
-                                },
+                                  const SizedBox(height: 30),
+                                ],
                               ),
+                            );
+                          }
+
+                          return Row(
+                            children: [
+                              SizedBox(width: 260, child: buildMyDeviceCard()),
+
+                              const SizedBox(width: 20),
+
+                              Expanded(child: Center(child: buildRadar())),
+
+                              const SizedBox(width: 20),
+
+                              SizedBox(
+                                width: 300,
+                                child: buildOnlineDevicesPanel(),
+                              ),
+                            ],
+                          );
+                        },
                       ),
-                    ],
-                  ),
+              ),
+            ),
           ),
-        ),
+        ],
       ),
     );
+  }
+}
+
+class RadarPainter extends CustomPainter {
+  final double sweepAngle;
+
+  RadarPainter({required this.sweepAngle});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+
+    final radius = size.width / 2;
+
+    final ringPaint = Paint()
+      ..color = Colors.blueAccent.withOpacity(0.25)
+      ..style = PaintingStyle.stroke;
+
+    canvas.drawCircle(
+      center,
+      16,
+      Paint()
+        ..color = Colors.blueAccent.withOpacity(0.8)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 20),
+    );
+
+    canvas.drawCircle(center, 10, Paint()..color = Colors.blueAccent);
+
+    for (int i = 1; i <= 4; i++) {
+      canvas.drawCircle(center, radius * i / 4, ringPaint);
+    }
+    final linePaint = Paint()
+      ..color = Colors.blueAccent.withOpacity(0.15)
+      ..strokeWidth = 1;
+
+    canvas.drawLine(
+      Offset(center.dx - radius, center.dy),
+      Offset(center.dx + radius, center.dy),
+      linePaint,
+    );
+
+    canvas.drawLine(
+      Offset(center.dx, center.dy - radius),
+      Offset(center.dx, center.dy + radius),
+      linePaint,
+    );
+
+    final sweepPaint = Paint()
+      ..shader = SweepGradient(
+        colors: [Colors.transparent, Colors.blueAccent.withOpacity(0.6)],
+        stops: const [0.8, 1.0],
+        startAngle: sweepAngle,
+        endAngle: sweepAngle + 0.8,
+      ).createShader(Rect.fromCircle(center: center, radius: radius));
+
+    final beamPaint = Paint()
+      ..shader = RadialGradient(
+        colors: [
+          Colors.cyanAccent.withOpacity(0.8),
+          Colors.cyanAccent.withOpacity(0.2),
+          Colors.transparent,
+        ],
+        stops: const [0.0, 0.6, 1.0],
+      ).createShader(Rect.fromCircle(center: center, radius: radius));
+
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      sweepAngle - 0.30,
+      0.30,
+      true,
+      beamPaint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant RadarPainter oldDelegate) {
+    return true;
+  }
+}
+
+class StarPainter extends CustomPainter {
+  final double offset;
+
+  StarPainter({required this.offset});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = Colors.white.withOpacity(0.15);
+
+    for (int i = 0; i < 120; i++) {
+      final x = ((i * 97) % size.width);
+
+      final y = (((i * 43) + (offset * 50)) % size.height).toDouble();
+
+      canvas.drawCircle(Offset(x.toDouble(), y), 1.5, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant StarPainter oldDelegate) {
+    return true;
   }
 }
