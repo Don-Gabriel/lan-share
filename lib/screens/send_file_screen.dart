@@ -1,9 +1,14 @@
-import 'package:flutter/material.dart';
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+
+import '../models/transfer_file.dart';
+import '../services/android_file_bridge.dart';
+import '../services/device_info_service.dart';
+import '../services/file_path_sanitizer.dart';
 import '../services/file_transfer_service.dart';
 import 'progress_screen.dart';
-import '../models/transfer_file.dart';
-import 'dart:io';
 
 class SendFileScreen extends StatefulWidget {
   final String deviceName;
@@ -20,11 +25,36 @@ class SendFileScreen extends StatefulWidget {
 }
 
 class _SendFileScreenState extends State<SendFileScreen> {
-  List<TransferFile> selectedFiles = [];
-
-  bool isSending = false;
+  static const Color _background = Color(0xFFF5F7FA);
+  static const Color _surface = Colors.white;
+  static const Color _border = Color(0xFFE2E8F0);
+  static const Color _text = Color(0xFF172033);
+  static const Color _muted = Color(0xFF667085);
+  static const Color _accent = Color(0xFF0F766E);
 
   final FileTransferService transferService = FileTransferService();
+  final List<TransferFile> selectedFiles = [];
+
+  bool isPicking = false;
+  bool isSending = false;
+  String activityLabel = '';
+
+  int get selectedFileCount {
+    return selectedFiles.where((file) => !file.isFolder).length;
+  }
+
+  int get selectedFolderCount {
+    return selectedFiles.where((file) => file.isFolder).length;
+  }
+
+  int get selectedKnownSize {
+    return selectedFiles
+        .where((file) => !file.isFolder)
+        .fold(0, (sum, file) => sum + file.size);
+  }
+
+  bool get canSend => selectedFiles.isNotEmpty && !isPicking && !isSending;
+
   String formatBytes(int bytes) {
     const kb = 1024;
     const mb = kb * 1024;
@@ -45,484 +75,559 @@ class _SendFileScreenState extends State<SendFileScreen> {
     return '$bytes B';
   }
 
-  int get totalSize {
-    return selectedFiles.fold(0, (sum, file) => sum + file.size);
+  String folderNameFromPath(String folderPath) {
+    final normalized = folderPath.replaceAll('\\', '/');
+    final parts = normalized
+        .split('/')
+        .where((part) => part.trim().isNotEmpty)
+        .toList();
+
+    return parts.isEmpty ? 'Selected folder' : parts.last;
   }
 
-  Widget buildDeviceCard() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.15)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Colors.blue.withOpacity(0.15),
-            ),
-            child: const Icon(
-              Icons.devices,
-              color: Colors.cyanAccent,
-              size: 40,
-            ),
-          ),
+  IconData getFileIcon(TransferFile file) {
+    if (file.isFolder) {
+      return Icons.folder_outlined;
+    }
 
-          const SizedBox(width: 20),
+    final name = file.name.toLowerCase();
 
-          Expanded(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Connected To',
-                    style: TextStyle(color: Colors.white70, fontSize: 14),
-                  ),
-
-                  const SizedBox(height: 4),
-
-                  Text(
-                    widget.deviceName,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 28,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-
-                  const SizedBox(height: 8),
-
-                  Text(
-                    widget.deviceIp,
-                    style: const TextStyle(color: Colors.white70, fontSize: 16),
-                  ),
-                  const Row(
-                    children: [
-                      Icon(Icons.circle, color: Colors.greenAccent, size: 10),
-
-                      SizedBox(width: 8),
-
-                      Text(
-                        'Online',
-                        style: TextStyle(
-                          color: Colors.greenAccent,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget buildStatsCard() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.15)),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.folder, color: Colors.white),
-                  const SizedBox(height: 8),
-                  Text(
-                    '${selectedFiles.length}',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const Text('Files', style: TextStyle(color: Colors.white70)),
-                ],
-              ),
-            ),
-          ),
-          Container(width: 1, height: 60, color: Colors.white12),
-
-          Expanded(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.storage, color: Colors.white),
-                  const SizedBox(height: 8),
-                  Text(
-                    formatBytes(totalSize),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const Text(
-                    'Total Size',
-                    style: TextStyle(color: Colors.white70),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  IconData getFileIcon(String fileName) {
-    final name = fileName.toLowerCase();
-
-    if (name.endsWith('.pdf')) return Icons.picture_as_pdf;
+    if (name.endsWith('.pdf')) return Icons.picture_as_pdf_outlined;
 
     if (name.endsWith('.jpg') ||
         name.endsWith('.jpeg') ||
-        name.endsWith('.png')) {
-      return Icons.image;
+        name.endsWith('.png') ||
+        name.endsWith('.webp')) {
+      return Icons.image_outlined;
     }
 
     if (name.endsWith('.mp4') ||
         name.endsWith('.mkv') ||
         name.endsWith('.avi')) {
-      return Icons.movie;
+      return Icons.movie_outlined;
     }
 
     if (name.endsWith('.mp3') || name.endsWith('.wav')) {
-      return Icons.music_note;
+      return Icons.audio_file_outlined;
     }
 
-    if (name.endsWith('.zip') || name.endsWith('.rar')) {
-      return Icons.archive;
+    if (name.endsWith('.zip') ||
+        name.endsWith('.rar') ||
+        name.endsWith('.7z')) {
+      return Icons.archive_outlined;
     }
 
-    return Icons.insert_drive_file;
-  }
-
-  Widget buildFilesCard() {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.15)),
-      ),
-      child: selectedFiles.isEmpty
-          ? const Center(
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.upload_file, color: Colors.white38, size: 60),
-
-                    SizedBox(height: 8),
-
-                    Text(
-                      'No files selected',
-                      style: TextStyle(color: Colors.white70, fontSize: 18),
-                    ),
-                    const SizedBox(height: 4),
-
-                    Text(
-                      'Select Files or Folder to begin transfer',
-                      style: TextStyle(color: Colors.white38, fontSize: 14),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          : ListView.builder(
-              itemCount: selectedFiles.length,
-              itemBuilder: (context, index) {
-                final file = selectedFiles[index];
-
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 8),
-
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.04),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-
-                  child: ListTile(
-                    leading: Icon(
-                      file.relativePath.contains('/')
-                          ? Icons.folder
-                          : getFileIcon(file.name),
-                      color: Colors.white,
-                    ),
-                    title: Text(
-                      file.relativePath,
-                      style: const TextStyle(color: Colors.white),
-                    ),
-
-                    subtitle: Text(
-                      '${file.relativePath.contains('/') ? "Folder" : "File"} • ${formatBytes(file.size)}',
-                      style: const TextStyle(color: Colors.white70),
-                    ),
-
-                    trailing: IconButton(
-                      icon: const Icon(Icons.close, color: Colors.redAccent),
-                      onPressed: () {
-                        setState(() {
-                          selectedFiles.removeAt(index);
-                        });
-                      },
-                    ),
-                  ),
-                );
-              },
-            ),
-    );
-  }
-
-  Widget buildActionButtons() {
-    return Row(
-      children: [
-        Expanded(
-          child: ElevatedButton.icon(
-            onPressed: isSending ? null : pickFile,
-            icon: const Icon(Icons.upload_file),
-            label: const Text('Select Files'),
-          ),
-        ),
-
-        const SizedBox(width: 10),
-
-        Expanded(
-          child: ElevatedButton.icon(
-            onPressed: isSending ? null : pickFolder,
-            icon: const Icon(Icons.folder),
-            label: const Text('Select Folder'),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget buildSendButton() {
-    return Container(
-      width: double.infinity,
-      height: 65,
-
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(18),
-        gradient: const LinearGradient(
-          colors: [Color(0xFF3D5AFE), Color(0xFF00E5FF)],
-        ),
-        boxShadow: [
-          BoxShadow(color: Colors.cyanAccent.withOpacity(0.4), blurRadius: 20),
-        ],
-      ),
-
-      child: ElevatedButton(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.transparent,
-          shadowColor: Colors.transparent,
-        ),
-
-        onPressed: selectedFiles.isEmpty || isSending ? null : sendFile,
-
-        child: Text(
-          isSending
-              ? 'Sending...'
-              : 'SEND ${selectedFiles.length} FILES • ${formatBytes(totalSize)}',
-          style: const TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.bold,
-            color: Colors.white,
-          ),
-        ),
-      ),
-    );
+    return Icons.insert_drive_file_outlined;
   }
 
   Future<void> pickFile() async {
-    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
-
-    if (result == null) return;
-
-    final files = <TransferFile>[];
-
-    for (final file in result.files) {
-      if (file.path == null) continue;
-
-      files.add(
-        TransferFile(
-          name: file.name,
-          path: file.path!,
-          size: file.size,
-          relativePath: file.name,
-        ),
-      );
-    }
+    if (isPicking) return;
 
     setState(() {
-      selectedFiles = files;
-    });
-  }
-
-  Future<void> sendFile() async {
-    if (isSending) return;
-
-    if (selectedFiles.isEmpty) {
-      return;
-    }
-
-    setState(() {
-      isSending = true;
+      isPicking = true;
+      activityLabel = 'Opening file picker...';
     });
 
     try {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => ProgressScreen(
-            isSending: true,
-            fromDevice: 'This Device',
-            toDevice: widget.deviceName,
-          ),
-        ),
-      );
-      transferService.setTransferQueue(selectedFiles);
+      final files = Platform.isAndroid
+          ? await AndroidFileBridge.pickFiles()
+          : await pickDesktopFiles();
 
-      await transferService.startBatchTransfer(ip: widget.deviceIp);
+      if (!mounted || files.isEmpty) {
+        return;
+      }
+
+      setState(() {
+        selectedFiles.addAll(files);
+        activityLabel = '';
+      });
+    } catch (error) {
+      showMessage('File selection failed: $error');
     } finally {
       if (mounted) {
         setState(() {
-          isSending = false;
+          isPicking = false;
+          if (activityLabel == 'Opening file picker...') {
+            activityLabel = '';
+          }
         });
       }
     }
   }
 
-  Future<void> pickFolder() async {
-    final folderPath = await FilePicker.platform.getDirectoryPath();
+  Future<List<TransferFile>> pickDesktopFiles() async {
+    final result = await FilePicker.platform.pickFiles(
+      allowMultiple: true,
+      withData: false,
+      withReadStream: false,
+    );
 
-    if (folderPath == null) return;
-
-    final root = Directory(folderPath);
-
-    final files = <TransferFile>[];
-
-    await for (final entity in root.list(recursive: true)) {
-      if (entity is File) {
-        final relative = entity.path
-            .substring(folderPath.length + 1)
-            .replaceAll('\\', '/');
-
-        files.add(
-          TransferFile(
-            name: entity.uri.pathSegments.last,
-            path: entity.path,
-            size: await entity.length(),
-            relativePath: relative,
-          ),
-        );
-        for (final file in files) {
-          print(file.relativePath);
-        }
-      }
+    if (result == null) {
+      return [];
     }
 
+    return result.files.where((file) => file.path != null).map((file) {
+      final safeName = FilePathSanitizer.sanitizeFileName(file.name);
+
+      return TransferFile(
+        name: safeName,
+        path: file.path!,
+        size: file.size,
+        relativePath: safeName,
+      );
+    }).toList();
+  }
+
+  Future<void> pickFolder() async {
+    if (isPicking) return;
+
     setState(() {
-      selectedFiles = files;
+      isPicking = true;
+      activityLabel = 'Opening folder picker...';
     });
+
+    try {
+      final folder = Platform.isAndroid
+          ? await AndroidFileBridge.pickFolder()
+          : await pickDesktopFolder();
+
+      if (!mounted || folder == null) {
+        return;
+      }
+
+      setState(() {
+        selectedFiles.add(folder);
+        activityLabel = '';
+      });
+    } catch (error) {
+      showMessage('Folder selection failed: $error');
+    } finally {
+      if (mounted) {
+        setState(() {
+          isPicking = false;
+          if (activityLabel == 'Opening folder picker...') {
+            activityLabel = '';
+          }
+        });
+      }
+    }
+  }
+
+  Future<TransferFile?> pickDesktopFolder() async {
+    final folderPath = await FilePicker.platform.getDirectoryPath();
+
+    if (folderPath == null) {
+      return null;
+    }
+
+    final folderName = FilePathSanitizer.sanitizeFileName(
+      folderNameFromPath(folderPath),
+      fallback: 'Selected folder',
+    );
+
+    return TransferFile.folder(
+      name: folderName,
+      path: folderPath,
+      relativePath: folderName,
+    );
+  }
+
+  Future<List<TransferFile>> expandSelectedItems() async {
+    final queue = <TransferFile>[];
+
+    for (final item in selectedFiles) {
+      if (!item.isFolder) {
+        queue.add(item);
+        continue;
+      }
+
+      setState(() {
+        activityLabel = 'Preparing ${item.name}...';
+      });
+
+      final files = item.usesContentUri
+          ? await AndroidFileBridge.listFolderFiles(item.contentUri!, item.name)
+          : await scanDesktopFolder(item.path, item.name);
+
+      queue.addAll(files);
+    }
+
+    return queue;
+  }
+
+  Future<List<TransferFile>> scanDesktopFolder(
+    String folderPath,
+    String folderName,
+  ) async {
+    final root = Directory(folderPath);
+    final files = <TransferFile>[];
+
+    if (!await root.exists()) {
+      return files;
+    }
+
+    await for (final entity in root.list(recursive: true, followLinks: false)) {
+      if (entity is! File) {
+        continue;
+      }
+
+      final relative = FilePathSanitizer.sanitizeRelativePath(
+        '$folderName/${entity.path.substring(folderPath.length + 1)}',
+        fallback: entity.uri.pathSegments.last,
+      );
+
+      files.add(
+        TransferFile(
+          name: FilePathSanitizer.sanitizeFileName(
+            entity.uri.pathSegments.last,
+          ),
+          path: entity.path,
+          size: await entity.length(),
+          relativePath: relative,
+        ),
+      );
+    }
+
+    return files;
+  }
+
+  Future<void> sendFile() async {
+    if (!canSend) return;
+
+    setState(() {
+      isSending = true;
+      activityLabel = 'Preparing transfer...';
+    });
+
+    transferService.transferResult.value = TransferResult.none;
+    transferService.transferRunning.value = true;
+    transferService.transferStatus.value = 'Preparing transfer...';
+    transferService.fileName.value = 'Preparing selection';
+    transferService.totalBytes.value = 0;
+    transferService.transferredBytes.value = 0;
+    transferService.currentQueueIndex.value = 1;
+    transferService.totalQueueFiles.value = selectedFiles.length;
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ProgressScreen(
+          isSending: true,
+          fromDevice: 'This Device',
+          toDevice: widget.deviceName,
+        ),
+      ),
+    );
+
+    try {
+      final info = await DeviceInfoService().getDeviceInfo();
+
+      transferService.setLocalDevice(
+        name: info['name'] ?? 'This Device',
+        id: info['id'] ?? '',
+        ip: info['ip'] ?? '',
+      );
+
+      final queue = await expandSelectedItems();
+
+      if (queue.isEmpty) {
+        transferService.transferResult.value = TransferResult.failed;
+        transferService.transferRunning.value = false;
+        transferService.transferredBytes.value++;
+        showMessage('No transferable files found.');
+        return;
+      }
+
+      transferService.setTransferQueue(queue);
+
+      await transferService.startBatchTransfer(
+        ip: widget.deviceIp,
+        deviceName: widget.deviceName,
+      );
+    } catch (error) {
+      transferService.transferResult.value = TransferResult.failed;
+      transferService.transferRunning.value = false;
+      transferService.transferredBytes.value++;
+      showMessage('Transfer failed to start: $error');
+    } finally {
+      if (mounted) {
+        setState(() {
+          isSending = false;
+          activityLabel = '';
+        });
+      }
+    }
+  }
+
+  void showMessage(String message) {
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Widget buildTargetHeader() {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: _surface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: _border),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              color: const Color(0xFFE6FFFA),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Icon(Icons.devices_other, color: _accent),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.deviceName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: _text,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(widget.deviceIp, style: const TextStyle(color: _muted)),
+              ],
+            ),
+          ),
+          const Icon(Icons.circle, color: Color(0xFF12B76A), size: 10),
+          const SizedBox(width: 8),
+          const Text(
+            'Online',
+            style: TextStyle(
+              color: Color(0xFF027A48),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget buildStats() {
+    final sizeLabel = selectedFolderCount > 0
+        ? '${formatBytes(selectedKnownSize)} + folders'
+        : formatBytes(selectedKnownSize);
+
+    return Row(
+      children: [
+        Expanded(child: buildStatTile('Files', '$selectedFileCount')),
+        const SizedBox(width: 10),
+        Expanded(child: buildStatTile('Folders', '$selectedFolderCount')),
+        const SizedBox(width: 10),
+        Expanded(child: buildStatTile('Size', sizeLabel)),
+      ],
+    );
+  }
+
+  Widget buildStatTile(String label, String value) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _surface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(color: _muted, fontSize: 12)),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: _text,
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget buildActions() {
+    return Row(
+      children: [
+        Expanded(
+          child: OutlinedButton.icon(
+            onPressed: isPicking || isSending ? null : pickFile,
+            icon: const Icon(Icons.note_add_outlined),
+            label: const Text('Add Files'),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: OutlinedButton.icon(
+            onPressed: isPicking || isSending ? null : pickFolder,
+            icon: const Icon(Icons.create_new_folder_outlined),
+            label: const Text('Add Folder'),
+          ),
+        ),
+        const SizedBox(width: 10),
+        IconButton.filledTonal(
+          tooltip: 'Clear selection',
+          onPressed: selectedFiles.isEmpty || isSending
+              ? null
+              : () => setState(selectedFiles.clear),
+          icon: const Icon(Icons.clear_all),
+        ),
+      ],
+    );
+  }
+
+  Widget buildSelectionList() {
+    return Container(
+      decoration: BoxDecoration(
+        color: _surface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+            child: Row(
+              children: [
+                const Text(
+                  'Selection',
+                  style: TextStyle(
+                    color: _text,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                if (activityLabel.isNotEmpty)
+                  Flexible(
+                    child: Text(
+                      activityLabel,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: _muted, fontSize: 12),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: selectedFiles.isEmpty
+                ? const Center(
+                    child: Text(
+                      'No files selected',
+                      style: TextStyle(color: _muted, fontSize: 16),
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.all(10),
+                    itemCount: selectedFiles.length,
+                    separatorBuilder: (_, _) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final file = selectedFiles[index];
+
+                      return ListTile(
+                        leading: Icon(getFileIcon(file), color: _accent),
+                        title: Text(
+                          file.relativePath,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: _text,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        subtitle: Text(
+                          file.isFolder
+                              ? 'Folder'
+                              : '${file.usesContentUri ? "Android file" : "File"} - ${formatBytes(file.size)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: IconButton(
+                          tooltip: 'Remove',
+                          onPressed: isSending
+                              ? null
+                              : () => setState(() {
+                                  selectedFiles.removeAt(index);
+                                }),
+                          icon: const Icon(Icons.close),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget buildSendButton() {
+    return SizedBox(
+      width: double.infinity,
+      height: 54,
+      child: FilledButton.icon(
+        onPressed: canSend ? sendFile : null,
+        icon: isSending
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.send_outlined),
+        label: Text(isSending ? 'Preparing...' : 'Send Now'),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      extendBodyBehindAppBar: false,
-
+      backgroundColor: _background,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF081B3A),
+        backgroundColor: _surface,
+        foregroundColor: _text,
         elevation: 0,
-
-        leading: Padding(
-          padding: const EdgeInsets.all(8),
-          child: Container(
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Colors.white.withOpacity(0.08),
-              border: Border.all(color: Colors.white.withOpacity(0.15)),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.cyanAccent.withOpacity(0.3),
-                  blurRadius: 12,
-                ),
-              ],
-            ),
-            child: IconButton(
-              icon: const Icon(Icons.arrow_back, color: Colors.white),
-              onPressed: () {
-                Navigator.pop(context);
-              },
-            ),
-          ),
-        ),
+        scrolledUnderElevation: 1,
+        title: const Text('Send'),
       ),
-
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF081B3A), Color(0xFF0A2A5E), Color(0xFF1565C0)],
-          ),
-        ),
-
-        child: SafeArea(
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 900),
-
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-
-                child: Column(
-                  children: [
-                    buildDeviceCard(),
-
-                    const SizedBox(height: 20),
-
-                    buildStatsCard(),
-
-                    const SizedBox(height: 20),
-
-                    Expanded(child: buildFilesCard()),
-
-                    const SizedBox(height: 20),
-
-                    buildActionButtons(),
-
-                    const SizedBox(height: 20),
-
-                    buildSendButton(),
-                  ],
-                ),
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 980),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
+                  buildTargetHeader(),
+                  const SizedBox(height: 12),
+                  buildStats(),
+                  const SizedBox(height: 12),
+                  buildActions(),
+                  const SizedBox(height: 12),
+                  Expanded(child: buildSelectionList()),
+                  const SizedBox(height: 12),
+                  buildSendButton(),
+                ],
               ),
             ),
           ),

@@ -9,8 +9,25 @@ class ProtocolPacket {
 }
 
 class ProtocolService {
+  static const String appId = 'lan_share';
+  static const int protocolVersion = 1;
+  static const int maxTypeLength = 64;
+  static const int maxPayloadLength = 8 * 1024 * 1024;
+
   static Uint8List createPacket(String type, List<int> payload) {
     final typeBytes = utf8.encode(type);
+
+    if (typeBytes.isEmpty || typeBytes.length > maxTypeLength) {
+      throw ArgumentError.value(type, 'type', 'Invalid packet type length');
+    }
+
+    if (payload.length > maxPayloadLength) {
+      throw ArgumentError.value(
+        payload.length,
+        'payload',
+        'Packet payload is too large',
+      );
+    }
 
     final builder = BytesBuilder();
 
@@ -41,6 +58,11 @@ class ProtocolService {
 
       final typeLength = bytes[0];
 
+      if (typeLength == 0 || typeLength > maxTypeLength) {
+        buffer.clear();
+        break;
+      }
+
       if (bytes.length < 1 + typeLength + 8) {
         break;
       }
@@ -52,6 +74,11 @@ class ProtocolService {
       );
 
       final payloadLength = lengthData.getUint64(0, Endian.big);
+
+      if (payloadLength > maxPayloadLength) {
+        buffer.clear();
+        break;
+      }
 
       final totalPacketSize = 1 + typeLength + 8 + payloadLength;
 

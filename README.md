@@ -1,23 +1,31 @@
-# lan_share
+# LAN Share
 
-A new Flutter project.
+LAN Share is a Flutter app for sending files and folders directly between
+devices on the same local network.
 
-## Getting Started
+## Current Features
 
-This project is a starting point for a Flutter application.
+- LAN device discovery with app/protocol validation.
+- Manual IPv4 connect when network broadcast is blocked.
+- File and folder transfer over TCP.
+- Android file selection uses URI streaming so large files appear immediately.
+- Batch queue progress with per-file progress, speed, and ETA.
+- SHA-256 verification after receive.
+- Safe receive-path sanitization for peer-provided file names and folders.
+- Mutual trusted-device tracking after accepting a transfer.
+- Persistent transfer history for sent and received transfers.
 
-A few resources to get you started if this is your first Flutter project:
+## Development Checks
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+Run these from this folder:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```powershell
+flutter pub get
+dart format --set-exit-if-changed .
+flutter analyze
+flutter test
+flutter run
+```
 
-
-git add .
-git commit -m "message"
-git pull --rebase origin main
-git push origin main
+`flutter run` starts the app for local testing. It does not create a release APK
+or Windows build artifact.

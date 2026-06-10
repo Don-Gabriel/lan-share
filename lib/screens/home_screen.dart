@@ -1,20 +1,24 @@
 import 'package:flutter/material.dart';
+import 'history_screen.dart';
 import 'send_file_screen.dart';
+import 'trusted_devices_screen.dart';
 import '../services/file_transfer_service.dart';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import '../services/hash_service.dart';
 import 'dart:async';
-import 'package:flutter/physics.dart';
-import 'dart:math' as math;
 import 'package:path_provider/path_provider.dart';
 import '../services/download_path_service.dart';
 import 'progress_screen.dart';
 import 'package:flutter_file_dialog/flutter_file_dialog.dart';
 
 import '../models/discovered_device.dart';
+import '../models/transfer_history_entry.dart';
 import '../services/device_info_service.dart';
 import '../services/discovery_service.dart';
+import '../services/file_path_sanitizer.dart';
+import '../services/transfer_history_service.dart';
+import '../services/trusted_device_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -30,14 +34,19 @@ class ReceivedBatchFile {
   ReceivedBatchFile({required this.file, required this.relativePath});
 }
 
-class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
+class _HomeScreenState extends State<HomeScreen> {
+  static const Color _background = Color(0xFFF5F7FA);
+  static const Color _surface = Colors.white;
+  static const Color _border = Color(0xFFE2E8F0);
+  static const Color _text = Color(0xFF172033);
+  static const Color _muted = Color(0xFF667085);
+  static const Color _accent = Color(0xFF0F766E);
+
   final DiscoveryService discovery = DiscoveryService();
   final FileTransferService transferService = FileTransferService();
 
   Map<String, String>? deviceInfo;
   Timer? _deviceCleanupTimer;
-  late AnimationController _radarController;
-  late AnimationController _starController;
   bool batchAccepted = false;
   int currentBatchFile = 0;
   int totalBatchFiles = 0;
@@ -52,20 +61,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   List<ReceivedBatchFile> batchFilesToSave = [];
   int receivedSize = 0;
   String? incomingRelativePath;
+  String? incomingSenderName;
+  String? incomingSenderIp;
+  String? incomingSenderId;
+  bool incomingDeviceTrusted = false;
   DateTime? receiveStartTime;
   Future<void> _writeQueue = Future.value();
 
   @override
   void initState() {
     super.initState();
-    _radarController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 4),
-    )..repeat();
-    _starController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 20),
-    )..repeat();
 
     loadDeviceInfo();
 
@@ -108,35 +113,70 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   Future<void> saveReceivedFile() async {
-    print('saveReceivedFile START');
+    debugPrint('saveReceivedFile START');
 
     if (receivingTempFile == null) return;
 
     final tempPath = receivingTempFile!.path;
+    final safeFileName = FilePathSanitizer.sanitizeFileName(incomingFileName);
+    String? savedPath;
 
     if (Platform.isAndroid) {
       final params = SaveFileDialogParams(
         sourceFilePath: tempPath,
-        fileName: incomingFileName,
+        fileName: safeFileName,
       );
 
-      final savePath = await FlutterFileDialog.saveFile(params: params);
+      savedPath = await FlutterFileDialog.saveFile(params: params);
 
-      print('SAVE PATH = $savePath');
+      debugPrint('SAVE PATH = $savedPath');
+
+      if (savedPath == null) {
+        await File(tempPath).delete();
+        await recordReceiveHistory(
+          status: 'cancelled',
+          fileName: safeFileName,
+          fileCount: 1,
+          totalBytes: incomingFileSize ?? receivedSize,
+        );
+        transferService.transferResult.value = TransferResult.cancelled;
+        transferService.transferRunning.value = false;
+        transferService.transferredBytes.value++;
+        return;
+      }
     } else if (Platform.isWindows) {
       final downloadsPath = await DownloadPathService().getDownloadPath();
 
-      File destination = File('$downloadsPath/$incomingFileName');
+      File destination = File('$downloadsPath/$safeFileName');
 
       destination = await getUniqueFile(destination);
 
       await File(tempPath).copy(destination.path);
       await File(tempPath).delete();
+      savedPath = destination.path;
 
-      print('Saved to: ${destination.path}');
+      debugPrint('Saved to: ${destination.path}');
+    } else {
+      await recordReceiveHistory(
+        status: 'failed',
+        fileName: safeFileName,
+        fileCount: 1,
+        totalBytes: incomingFileSize ?? receivedSize,
+      );
+      transferService.transferResult.value = TransferResult.failed;
+      transferService.transferRunning.value = false;
+      transferService.transferredBytes.value++;
+      return;
     }
 
-    print('FILE SAVED');
+    debugPrint('FILE SAVED');
+    await recordReceiveHistory(
+      status: 'success',
+      fileName: safeFileName,
+      fileCount: 1,
+      totalBytes: incomingFileSize ?? receivedSize,
+      savedPath: savedPath,
+    );
     transferService.transferResult.value = TransferResult.success;
     transferService.transferRunning.value = false;
     transferService.transferredBytes.value++;
@@ -150,31 +190,62 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     final folderPath = await FilePicker.platform.getDirectoryPath();
 
     if (folderPath == null) {
+      for (final item in batchFilesToSave) {
+        try {
+          if (await item.file.exists()) {
+            await item.file.delete();
+          }
+        } catch (_) {}
+      }
+
+      batchFilesToSave.clear();
+      await recordReceiveHistory(
+        status: 'cancelled',
+        fileName: '$totalBatchFiles files',
+        fileCount: totalBatchFiles,
+        totalBytes: receivedSize,
+      );
+      transferService.transferResult.value = TransferResult.cancelled;
+      transferService.transferRunning.value = false;
+      transferService.transferredBytes.value++;
       return;
     }
-    print("FILES TO SAVE = ${batchFilesToSave.length}");
+    debugPrint("FILES TO SAVE = ${batchFilesToSave.length}");
+
+    int totalSavedBytes = 0;
 
     for (final item in batchFilesToSave) {
-      print("SAVE: ${item.relativePath}");
+      debugPrint("SAVE: ${item.relativePath}");
 
-      final safePath = item.relativePath.replaceAll('\\', '/');
+      final safePath = FilePathSanitizer.sanitizeRelativePath(
+        item.relativePath,
+      );
 
-      final destination = File('$folderPath/$safePath');
+      File destination = File('$folderPath/$safePath');
       await destination.parent.create(recursive: true);
+      destination = await getUniqueFile(destination);
 
       await item.file.copy(destination.path);
+      totalSavedBytes += await destination.length();
       await Future.delayed(const Duration(milliseconds: 100));
       try {
-        print(receivingFile);
+        debugPrint('$receivingFile');
         await item.file.delete();
       } catch (e) {
-        print('TEMP DELETE FAILED: $e');
+        debugPrint('TEMP DELETE FAILED: $e');
       }
     }
 
     batchFilesToSave.clear();
 
-    print('ALL FILES SAVED');
+    debugPrint('ALL FILES SAVED');
+    await recordReceiveHistory(
+      status: 'success',
+      fileName: '$totalBatchFiles files',
+      fileCount: totalBatchFiles,
+      totalBytes: totalSavedBytes,
+      savedPath: folderPath,
+    );
     transferService.transferResult.value = TransferResult.success;
     transferService.transferRunning.value = false;
     transferService.transferredBytes.value++;
@@ -183,13 +254,27 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Future<void> loadDeviceInfo() async {
     final info = await DeviceInfoService().getDeviceInfo();
 
+    if (!mounted) {
+      return;
+    }
+
     setState(() {
       deviceInfo = info;
     });
 
+    transferService.setLocalDevice(
+      name: info['name'] ?? 'This Device',
+      id: info['id'] ?? '',
+      ip: info['ip'] ?? '',
+    );
+
     await discovery.startListening(onDeviceFound: onDeviceFound);
 
-    discovery.startBroadcasting(name: info['name']!, ip: info['ip']!);
+    discovery.startBroadcasting(
+      name: info['name']!,
+      ip: info['ip']!,
+      deviceId: info['id']!,
+    );
     try {
       await transferService.startServer(
         onPacket: (packet) async {
@@ -200,8 +285,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         },
       );
     } catch (e, s) {
-      print(e);
-      print(s);
+      debugPrint('$e');
+      debugPrint('$s');
     }
   }
 
@@ -215,6 +300,68 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     });
   }
 
+  Future<void> prepareIncomingFile({
+    required int fileIndex,
+    required int totalFiles,
+  }) async {
+    receivedSize = 0;
+    receiveStartTime = DateTime.now();
+
+    final tempDir = await getTemporaryDirectory();
+    final safeFileName = FilePathSanitizer.sanitizeFileName(incomingFileName);
+
+    File tempFile = File('${tempDir.path}/$safeFileName');
+
+    tempFile = await getUniqueFile(tempFile);
+
+    incomingFileName = tempFile.uri.pathSegments.last;
+    receivingTempFile = tempFile;
+    receivingFile = await tempFile.open(mode: FileMode.write);
+
+    transferService.fileName.value = incomingFileName!;
+    transferService.totalBytes.value = incomingFileSize!;
+    transferService.transferredBytes.value = 0;
+    transferService.currentQueueIndex.value = fileIndex;
+    transferService.totalQueueFiles.value = totalFiles;
+  }
+
+  Future<void> trustIncomingDevice() async {
+    if (incomingSenderId == null || incomingSenderId!.isEmpty) {
+      return;
+    }
+
+    await TrustedDeviceService.instance.trust(
+      id: incomingSenderId!,
+      name: incomingSenderName ?? 'Remote Device',
+      ip: incomingSenderIp ?? '',
+    );
+
+    incomingDeviceTrusted = true;
+  }
+
+  Future<void> recordReceiveHistory({
+    required String status,
+    required String fileName,
+    required int fileCount,
+    required int totalBytes,
+    String? savedPath,
+  }) async {
+    await TransferHistoryService.instance.add(
+      TransferHistoryEntry(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        direction: 'received',
+        status: status,
+        fileName: fileName,
+        fileCount: fileCount,
+        totalBytes: totalBytes,
+        deviceName: incomingSenderName ?? 'Remote Device',
+        deviceIp: incomingSenderIp ?? '',
+        savedPath: savedPath,
+        completedAt: DateTime.now(),
+      ),
+    );
+  }
+
   Future<void> onPacketReceived(Map<String, dynamic> packet) async {
     if (packet['type'] == 'accept') {
       return;
@@ -225,9 +372,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       transferService.transferStatus.value = 'Receiving File...';
 
       if (incomingFileSize == 0) {
-        print('ZERO BYTE FILE');
+        debugPrint('ZERO BYTE FILE');
 
         await receivingFile?.flush();
+        await receivingFile?.close();
+        receivingFile = null;
 
         final actualHash = await HashService.calculateSha256(
           receivingTempFile!.path,
@@ -235,6 +384,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
         if (actualHash != expectedHash) {
           transferService.transferResult.value = TransferResult.failed;
+          transferService.transferRunning.value = false;
+          transferService.transferredBytes.value++;
+          await recordReceiveHistory(
+            status: 'failed',
+            fileName: incomingFileName ?? 'Unknown file',
+            fileCount: batchAccepted ? totalBatchFiles : 1,
+            totalBytes: incomingFileSize ?? 0,
+          );
           return;
         }
 
@@ -247,8 +404,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               relativePath: incomingRelativePath!,
             ),
           );
-          print(
-            "BATCH ADD: ${incomingRelativePath} "
+          debugPrint(
+            "BATCH ADD: $incomingRelativePath "
             "COUNT=${batchFilesToSave.length + 1}",
           );
 
@@ -269,10 +426,24 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       return;
     }
 
-    incomingFileName = packet['name'];
-    incomingRelativePath = packet['relativePath'];
+    if (packet['type'] == 'invalid_offer') {
+      await transferService.sendReject();
+      return;
+    }
+
+    incomingFileName = FilePathSanitizer.sanitizeFileName(packet['name']);
+    incomingRelativePath = FilePathSanitizer.sanitizeRelativePath(
+      packet['relativePath'],
+      fallback: incomingFileName ?? 'file',
+    );
     expectedHash = packet['sha256'];
     incomingFileSize = packet['size'];
+    incomingSenderName = packet['senderName'] as String? ?? 'Remote Device';
+    incomingSenderIp = packet['senderIp'] as String? ?? '';
+    incomingSenderId = packet['senderId'] as String? ?? '';
+    incomingDeviceTrusted = await TrustedDeviceService.instance.isTrusted(
+      incomingSenderId,
+    );
 
     final bool batch = packet['batch'] ?? false;
     final int fileIndex = packet['fileIndex'] ?? 1;
@@ -282,39 +453,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     transferService.currentQueueIndex.value = fileIndex;
     transferService.totalQueueFiles.value = totalFiles;
 
-    print(
+    debugPrint(
       'BATCH=$batch FILE=$fileIndex/$totalFiles batchAccepted=$batchAccepted',
     );
 
     if (batch && batchAccepted) {
-      receivedSize = 0;
-      receiveStartTime = DateTime.now();
-
-      final tempDir = await getTemporaryDirectory();
-
-      File tempFile = File('${tempDir.path}/$incomingFileName');
-
-      tempFile = await getUniqueFile(tempFile);
-
-      incomingFileName = tempFile.uri.pathSegments.last;
-
-      receivingTempFile = tempFile;
-
-      receivingFile = await tempFile.open(mode: FileMode.write);
-      receivedSize = 0;
-
-      transferService.fileName.value = incomingFileName!;
-
-      transferService.totalBytes.value = incomingFileSize!;
-
-      transferService.transferredBytes.value = 0;
-
-      if (batch) {
-        batchAccepted = true;
-      }
-
-      transferService.currentQueueIndex.value = fileIndex;
-      transferService.totalQueueFiles.value = totalFiles;
+      await prepareIncomingFile(fileIndex: fileIndex, totalFiles: totalFiles);
 
       transferService.sendAccept();
 
@@ -326,141 +470,94 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     showDialog(
       context: context,
       builder: (context) {
-        return Dialog(
-          backgroundColor: const Color(0xFF081B3A),
-          child: Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: const Color(0xFF0A2A5E),
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: Colors.white.withOpacity(0.15)),
-            ),
+        final trustColor = incomingDeviceTrusted
+            ? _accent
+            : const Color(0xFFB54708);
+        final trustBackground = incomingDeviceTrusted
+            ? const Color(0xFFE6FFFA)
+            : const Color(0xFFFFF7E8);
+
+        return AlertDialog(
+          backgroundColor: _surface,
+          surfaceTintColor: _surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: const BorderSide(color: _border),
+          ),
+          icon: const Icon(
+            Icons.file_download_outlined,
+            color: _accent,
+            size: 36,
+          ),
+          title: Text(batch ? 'Incoming Files' : 'Incoming File'),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
             child: Column(
               mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Icon(
-                  Icons.file_download,
-                  size: 60,
-                  color: Colors.cyanAccent,
-                ),
-
-                const SizedBox(height: 15),
-
-                Text(
-                  batch ? 'Incoming Files' : 'Incoming File',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-
-                const SizedBox(height: 20),
-
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.05),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    children: [
-                      if (batch)
-                        Text(
-                          '$fileIndex of $totalFiles Files',
-                          style: const TextStyle(
-                            color: Colors.cyanAccent,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-
-                      if (batch) const SizedBox(height: 8),
-
-                      Text(
-                        packet['name'],
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-
-                      const SizedBox(height: 8),
-
-                      Text(
-                        formatBytes(packet['size']),
-                        style: const TextStyle(color: Colors.white70),
-                      ),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: 24),
-
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () async {
-                          Navigator.pop(context);
-
-                          await transferService.sendReject();
-                        },
-                        child: const Text('Reject'),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: trustBackground,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: trustColor),
+                    ),
+                    child: Text(
+                      incomingDeviceTrusted
+                          ? 'Trusted device'
+                          : 'New device, trust on accept',
+                      style: TextStyle(
+                        color: trustColor,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
-
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(
+                      Icons.insert_drive_file_outlined,
+                      color: _accent,
+                    ),
                     const SizedBox(width: 10),
-
                     Expanded(
-                      child: ElevatedButton(
-                        onPressed: () async {
-                          Navigator.pop(context);
-
-                          if (batch) {
-                            batchAccepted = true;
-                          }
-
-                          receivedSize = 0;
-                          receiveStartTime = DateTime.now();
-
-                          final tempDir = await getTemporaryDirectory();
-
-                          File tempFile = File(
-                            '${tempDir.path}/$incomingFileName',
-                          );
-
-                          tempFile = await getUniqueFile(tempFile);
-
-                          incomingFileName = tempFile.uri.pathSegments.last;
-
-                          receivingTempFile = tempFile;
-
-                          receivingFile = await tempFile.open(
-                            mode: FileMode.write,
-                          );
-
-                          transferService.fileName.value = incomingFileName!;
-
-                          transferService.totalBytes.value = incomingFileSize!;
-
-                          transferService.transferredBytes.value = 0;
-
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => ProgressScreen(
-                                isSending: false,
-                                fromDevice: 'Remote Device',
-                                toDevice: deviceInfo!['name']!,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (batch)
+                            Text(
+                              'File $fileIndex of $totalFiles',
+                              style: const TextStyle(
+                                color: _accent,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
                               ),
                             ),
-                          );
-
-                          transferService.sendAccept();
-                        },
-                        child: const Text('Accept'),
+                          if (batch) const SizedBox(height: 4),
+                          Text(
+                            incomingFileName ?? 'Incoming file',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: _text,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            formatBytes(incomingFileSize ?? 0),
+                            style: const TextStyle(color: _muted),
+                          ),
+                        ],
                       ),
                     ),
                   ],
@@ -468,6 +565,49 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               ],
             ),
           ),
+          actions: [
+            OutlinedButton(
+              onPressed: () async {
+                Navigator.pop(context);
+
+                await transferService.sendReject();
+              },
+              child: const Text('Reject'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                Navigator.pop(context);
+
+                if (batch) {
+                  batchAccepted = true;
+                }
+
+                await trustIncomingDevice();
+                await prepareIncomingFile(
+                  fileIndex: fileIndex,
+                  totalFiles: totalFiles,
+                );
+
+                if (!context.mounted) {
+                  return;
+                }
+
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => ProgressScreen(
+                      isSending: false,
+                      fromDevice: incomingSenderName ?? 'Remote Device',
+                      toDevice: deviceInfo!['name']!,
+                    ),
+                  ),
+                );
+
+                transferService.sendAccept();
+              },
+              child: const Text('Accept'),
+            ),
+          ],
         );
       },
     );
@@ -508,6 +648,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
     receivedSize = 0;
 
+    if (incomingFileName != null) {
+      await recordReceiveHistory(
+        status: 'cancelled',
+        fileName: incomingFileName!,
+        fileCount: batchAccepted ? totalBatchFiles : 1,
+        totalBytes: incomingFileSize ?? 0,
+      );
+    }
+
     if (!batchAccepted) {
       transferService.transferRunning.value = false;
     }
@@ -545,43 +694,48 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       );
 
       if (receivedSize % (10 * 1024 * 1024) < data.length) {
-        print('Received $receivedSize / $incomingFileSize');
+        debugPrint('Received $receivedSize / $incomingFileSize');
       }
 
       if (incomingFileSize != null && receivedSize == incomingFileSize!) {
-        final receiveEndTime = DateTime.now();
         transferService.transferStatus.value = 'Verifying File...';
         await receivingFile!.flush();
         await receivingFile!.close();
         receivingFile = null;
 
-        print('VERIFY FILE: ${receivingTempFile?.path}');
-        print('SIZE: $receivedSize');
-        print('EXPECTED: $incomingFileSize');
+        debugPrint('VERIFY FILE: ${receivingTempFile?.path}');
+        debugPrint('SIZE: $receivedSize');
+        debugPrint('EXPECTED: $incomingFileSize');
 
         final actualHash = await HashService.calculateSha256(
           receivingTempFile!.path,
         );
 
-        print('EXPECTED HASH: $expectedHash');
-        print('ACTUAL HASH:   $actualHash');
+        debugPrint('EXPECTED HASH: $expectedHash');
+        debugPrint('ACTUAL HASH:   $actualHash');
 
         if (actualHash != expectedHash) {
-          print('HASH MISMATCH');
+          debugPrint('HASH MISMATCH');
 
           transferService.transferResult.value = TransferResult.failed;
+          transferService.transferRunning.value = false;
+          transferService.transferredBytes.value++;
+          await recordReceiveHistory(
+            status: 'failed',
+            fileName: incomingFileName ?? 'Unknown file',
+            fileCount: batchAccepted ? totalBatchFiles : 1,
+            totalBytes: incomingFileSize ?? receivedSize,
+          );
 
           return;
         }
 
-        print('HASH VERIFIED');
-        final seconds =
-            receiveEndTime.difference(receiveStartTime!).inMilliseconds / 1000;
+        debugPrint('HASH VERIFIED');
 
         if (!batchAccepted) {
           transferService.transferResult.value = TransferResult.success;
         }
-        print('SENDING TRANSFER ACK');
+        debugPrint('SENDING TRANSFER ACK');
 
         await transferService.sendTransferAck();
 
@@ -594,7 +748,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ? 'Waiting For Remaining Files...'
             : 'Saving File...';
 
-        print(
+        debugPrint(
           'SAVE CHECK batchAccepted=$batchAccepted '
           'file=$currentBatchFile/$totalBatchFiles',
         );
@@ -606,29 +760,29 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               relativePath: incomingRelativePath!,
             ),
           );
-          print(
-            "BATCH ADD: ${incomingRelativePath} "
+          debugPrint(
+            "BATCH ADD: $incomingRelativePath "
             "COUNT=${batchFilesToSave.length + 1}",
           );
 
           if (currentBatchFile == totalBatchFiles) {
-            print('LAST FILE RECEIVED');
+            debugPrint('LAST FILE RECEIVED');
 
             await saveBatchFilesToFolder();
 
             batchAccepted = false;
           }
         } else {
-          print('CALLING saveReceivedFile()');
+          debugPrint('CALLING saveReceivedFile()');
 
           await saveReceivedFile();
 
-          print('saveReceivedFile() FINISHED');
+          debugPrint('saveReceivedFile() FINISHED');
 
           receivingTempFile = null;
         }
-      } else if (receivedSize > incomingFileSize!) {
-        print(
+      } else if (incomingFileSize != null && receivedSize > incomingFileSize!) {
+        debugPrint(
           'ERROR: RECEIVED MORE BYTES THAN EXPECTED '
           '$receivedSize > $incomingFileSize',
         );
@@ -642,19 +796,25 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     if (deviceInfo == null) return;
 
     final myIp = deviceInfo!['ip'];
+    final myId = deviceInfo!['id'];
 
-    if (data['ip'] == myIp) {
+    if (data['ip'] == myIp || data['deviceId'] == myId) {
       return;
     }
 
-    final index = devices.indexWhere((d) => d.ip == data['ip']);
+    final deviceId = data['deviceId'] as String? ?? data['ip'] as String;
+    final index = devices.indexWhere(
+      (d) => d.id == deviceId || d.ip == data['ip'],
+    );
 
     setState(() {
       if (index == -1) {
         devices.add(
           DiscoveredDevice(
+            id: deviceId,
             name: data['name'],
             ip: data['ip'],
+            port: data['port'],
             lastSeen: DateTime.now(),
           ),
         );
@@ -662,102 +822,128 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         devices[index].lastSeen = DateTime.now();
 
         devices[index] = DiscoveredDevice(
+          id: deviceId,
           name: data['name'],
           ip: data['ip'],
+          port: data['port'],
           lastSeen: DateTime.now(),
         );
       }
     });
   }
 
-  Widget buildDeviceDot(String name) {
-    return TweenAnimationBuilder<double>(
-      tween: Tween(begin: 0.9, end: 1.15),
-      duration: const Duration(seconds: 2),
-      curve: Curves.easeInOut,
-      builder: (context, scale, child) {
-        return Column(
-          children: [
-            Stack(
-              alignment: Alignment.center,
-              children: [
-                Container(
-                  width: 44 * scale,
-                  height: 44 * scale,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.greenAccent.withOpacity(0.15),
-                  ),
-                ),
+  Future<void> showManualConnectDialog() async {
+    final ipController = TextEditingController();
+    final nameController = TextEditingController(text: 'Manual Device');
 
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 1200),
-                  width: 32,
-                  height: 32,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.greenAccent,
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.greenAccent.withOpacity(0.8),
-                        blurRadius: 30,
-                        spreadRadius: 8,
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+    final result = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Connect Manually'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: ipController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(labelText: 'IPv4 address'),
+              ),
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(labelText: 'Device name'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
             ),
+            ElevatedButton(
+              onPressed: () {
+                final ip = ipController.text.trim();
 
-            const SizedBox(height: 8),
+                if (!FilePathSanitizer.isValidIpv4(ip)) {
+                  return;
+                }
 
-            Text(
-              name,
-              style: const TextStyle(color: Colors.white, fontSize: 13),
+                Navigator.pop(context, {
+                  'ip': ip,
+                  'name': nameController.text.trim().isEmpty
+                      ? 'Manual Device'
+                      : nameController.text.trim(),
+                });
+              },
+              child: const Text('Connect'),
             ),
           ],
         );
       },
+    );
+
+    ipController.dispose();
+    nameController.dispose();
+
+    if (result == null || !mounted) {
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SendFileScreen(
+          deviceName: result['name']!,
+          deviceIp: result['ip']!,
+        ),
+      ),
     );
   }
 
   Widget buildMyDeviceCard() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.15)),
+        color: _surface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: _border),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          const Text(
-            'My Device',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
+          Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              color: const Color(0xFFE6FFFA),
+              borderRadius: BorderRadius.circular(8),
             ),
+            child: const Icon(Icons.computer_outlined, color: _accent),
           ),
-
-          const SizedBox(height: 20),
-
-          Text(
-            deviceInfo!['name']!,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'This device',
+                  style: TextStyle(color: _muted, fontSize: 12),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  deviceInfo!['name']!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: _text,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(deviceInfo!['ip']!, style: const TextStyle(color: _muted)),
+              ],
             ),
-          ),
-
-          const SizedBox(height: 10),
-
-          Text(
-            deviceInfo!['ip']!,
-            style: const TextStyle(color: Colors.white70, fontSize: 16),
           ),
         ],
       ),
@@ -766,51 +952,79 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   Widget buildOnlineDevicesPanel() {
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.15)),
+        color: _surface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: _border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Online Devices (${devices.length})',
+            'Available devices (${devices.length})',
             style: const TextStyle(
-              color: Colors.white,
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
+              color: _text,
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
             ),
           ),
 
-          const SizedBox(height: 20),
+          const SizedBox(height: 12),
 
-          Expanded(
-            child: ListView.builder(
-              itemCount: devices.length,
-              itemBuilder: (context, index) {
-                final device = devices[index];
+          Expanded(child: buildDeviceList()),
+        ],
+      ),
+    );
+  }
 
-                return AnimatedPadding(
-                  duration: const Duration(milliseconds: 500),
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Material(
-                    color: Colors.transparent,
-                    child: ListTile(
-                      title: Text(
-                        device.name,
-                        style: const TextStyle(color: Colors.white),
-                      ),
-                      subtitle: Text(
-                        device.ip,
-                        style: const TextStyle(color: Colors.white70),
-                      ),
-                    ),
-                  ),
-                );
-              },
+  Widget buildQuickActions() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _surface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: _border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Actions',
+            style: TextStyle(
+              color: _text,
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
             ),
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: showManualConnectDialog,
+            icon: const Icon(Icons.add_link),
+            label: const Text('Connect by IP'),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const HistoryScreen()),
+              );
+            },
+            icon: const Icon(Icons.history),
+            label: const Text('Transfer History'),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const TrustedDevicesScreen()),
+              );
+            },
+            icon: const Icon(Icons.verified_user_outlined),
+            label: const Text('Trusted Devices'),
           ),
         ],
       ),
@@ -820,135 +1034,89 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Widget buildOnlineDevicesMobile() {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.08),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.15)),
+        color: _surface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: _border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Online Devices (${devices.length})',
+            'Available devices (${devices.length})',
             style: const TextStyle(
-              color: Colors.white,
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
+              color: _text,
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
             ),
           ),
 
-          const SizedBox(height: 15),
+          const SizedBox(height: 12),
 
-          if (devices.isEmpty)
-            const Text('Searching...', style: TextStyle(color: Colors.white70)),
-
-          ...devices.map(
-            (device) => ListTile(
-              leading: const Icon(
-                Icons.circle,
-                color: Colors.greenAccent,
-                size: 14,
-              ),
-              title: Text(
-                device.name,
-                style: const TextStyle(color: Colors.white),
-              ),
-              subtitle: Text(
-                device.ip,
-                style: const TextStyle(color: Colors.white70),
-              ),
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => SendFileScreen(
-                      deviceName: device.name,
-                      deviceIp: device.ip,
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
+          SizedBox(height: 320, child: buildDeviceList()),
         ],
       ),
     );
   }
 
-  Widget buildStars() {
-    return AnimatedBuilder(
-      animation: _starController,
-      builder: (context, child) {
-        return CustomPaint(
-          painter: StarPainter(offset: _starController.value),
-          size: Size.infinite,
+  Widget buildDeviceList() {
+    if (devices.isEmpty) {
+      return const Center(
+        child: Text(
+          'Searching for devices on this network',
+          style: TextStyle(color: _muted),
+        ),
+      );
+    }
+
+    return ListView.separated(
+      itemCount: devices.length,
+      separatorBuilder: (_, _) => const Divider(height: 1),
+      itemBuilder: (context, index) {
+        final device = devices[index];
+
+        return ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: const Color(0xFFECFDF3),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Icon(
+              Icons.devices_other_outlined,
+              color: Color(0xFF027A48),
+            ),
+          ),
+          title: Text(
+            device.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: _text, fontWeight: FontWeight.w600),
+          ),
+          subtitle: Text(device.ip, style: const TextStyle(color: _muted)),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => SendFileScreen(
+                  deviceName: device.name,
+                  deviceIp: device.ip,
+                ),
+              ),
+            );
+          },
         );
       },
-    );
-  }
-
-  Widget buildRadar() {
-    final size = MediaQuery.of(context).size;
-    final isDesktop = size.width > 900;
-    final radarSize = isDesktop ? 500.0 : size.width * 0.75;
-    final center = radarSize / 2;
-    return SizedBox(
-      height: radarSize,
-      width: radarSize,
-      child: AnimatedBuilder(
-        animation: _radarController,
-        builder: (context, child) {
-          return CustomPaint(
-            painter: RadarPainter(
-              sweepAngle: _radarController.value * 2 * math.pi,
-            ),
-            child: Stack(
-              children: [
-                for (int i = 0; i < devices.length; i++)
-                  Positioned(
-                    left:
-                        center +
-                        ((radarSize * 0.32) * math.cos((i + 1) * 1.2)) -
-                        20,
-                    top:
-                        center +
-                        ((radarSize * 0.32) * math.sin((i + 1) * 1.2)) -
-                        20,
-                    child: AnimatedOpacity(
-                      duration: const Duration(milliseconds: 600),
-                      opacity: 1,
-                      child: GestureDetector(
-                        onTap: () {
-                          final device = devices[i];
-
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => SendFileScreen(
-                                deviceName: device.name,
-                                deviceIp: device.ip,
-                              ),
-                            ),
-                          );
-                        },
-                        child: buildDeviceDot(devices[i].name),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          );
-        },
-      ),
     );
   }
 
   @override
   void dispose() {
     _deviceCleanupTimer?.cancel();
-    _radarController.dispose();
-    _starController.dispose();
 
     discovery.dispose();
 
@@ -958,185 +1126,94 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: _background,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF081B3A),
+        backgroundColor: _surface,
+        foregroundColor: _text,
         elevation: 0,
+        scrolledUnderElevation: 1,
         title: const Text(
           'LAN Share',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          style: TextStyle(fontWeight: FontWeight.w700),
         ),
-      ),
-      extendBodyBehindAppBar: false,
-      body: Stack(
-        children: [
-          buildStars(),
-          Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Color(0xFF081B3A),
-                  Color(0xFF0A2A5E),
-                  Color(0xFF1565C0),
-                ],
-              ),
-            ),
-            child: SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: deviceInfo == null
-                    ? const Center(child: CircularProgressIndicator())
-                    : LayoutBuilder(
-                        builder: (context, constraints) {
-                          final isDesktop = constraints.maxWidth > 900;
-
-                          if (!isDesktop) {
-                            return SingleChildScrollView(
-                              child: Column(
-                                children: [
-                                  const SizedBox(height: 20),
-
-                                  Center(child: buildRadar()),
-
-                                  const SizedBox(height: 30),
-
-                                  buildOnlineDevicesMobile(),
-
-                                  const SizedBox(height: 20),
-
-                                  buildMyDeviceCard(),
-
-                                  const SizedBox(height: 30),
-                                ],
-                              ),
-                            );
-                          }
-
-                          return Row(
-                            children: [
-                              SizedBox(width: 260, child: buildMyDeviceCard()),
-
-                              const SizedBox(width: 20),
-
-                              Expanded(child: Center(child: buildRadar())),
-
-                              const SizedBox(width: 20),
-
-                              SizedBox(
-                                width: 300,
-                                child: buildOnlineDevicesPanel(),
-                              ),
-                            ],
-                          );
-                        },
-                      ),
-              ),
-            ),
+        actions: [
+          IconButton(
+            tooltip: 'Transfer history',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const HistoryScreen()),
+              );
+            },
+            icon: const Icon(Icons.history),
+          ),
+          IconButton(
+            tooltip: 'Manual connect',
+            onPressed: showManualConnectDialog,
+            icon: const Icon(Icons.add_link),
+          ),
+          IconButton(
+            tooltip: 'Trusted devices',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const TrustedDevicesScreen()),
+              );
+            },
+            icon: const Icon(Icons.verified_user),
           ),
         ],
       ),
+      extendBodyBehindAppBar: false,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: deviceInfo == null
+              ? const Center(child: CircularProgressIndicator())
+              : LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isDesktop = constraints.maxWidth > 860;
+
+                    if (!isDesktop) {
+                      return SingleChildScrollView(
+                        child: Column(
+                          children: [
+                            buildMyDeviceCard(),
+                            const SizedBox(height: 12),
+                            buildQuickActions(),
+                            const SizedBox(height: 12),
+                            buildOnlineDevicesMobile(),
+                          ],
+                        ),
+                      );
+                    }
+
+                    return Center(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 1120),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(
+                              width: 340,
+                              child: Column(
+                                children: [
+                                  buildMyDeviceCard(),
+                                  const SizedBox(height: 12),
+                                  buildQuickActions(),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(child: buildOnlineDevicesPanel()),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ),
     );
-  }
-}
-
-class RadarPainter extends CustomPainter {
-  final double sweepAngle;
-
-  RadarPainter({required this.sweepAngle});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-
-    final radius = size.width / 2;
-
-    final ringPaint = Paint()
-      ..color = Colors.blueAccent.withOpacity(0.25)
-      ..style = PaintingStyle.stroke;
-
-    canvas.drawCircle(
-      center,
-      16,
-      Paint()
-        ..color = Colors.blueAccent.withOpacity(0.8)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 20),
-    );
-
-    canvas.drawCircle(center, 10, Paint()..color = Colors.blueAccent);
-
-    for (int i = 1; i <= 4; i++) {
-      canvas.drawCircle(center, radius * i / 4, ringPaint);
-    }
-    final linePaint = Paint()
-      ..color = Colors.blueAccent.withOpacity(0.15)
-      ..strokeWidth = 1;
-
-    canvas.drawLine(
-      Offset(center.dx - radius, center.dy),
-      Offset(center.dx + radius, center.dy),
-      linePaint,
-    );
-
-    canvas.drawLine(
-      Offset(center.dx, center.dy - radius),
-      Offset(center.dx, center.dy + radius),
-      linePaint,
-    );
-
-    final sweepPaint = Paint()
-      ..shader = SweepGradient(
-        colors: [Colors.transparent, Colors.blueAccent.withOpacity(0.6)],
-        stops: const [0.8, 1.0],
-        startAngle: sweepAngle,
-        endAngle: sweepAngle + 0.8,
-      ).createShader(Rect.fromCircle(center: center, radius: radius));
-
-    final beamPaint = Paint()
-      ..shader = RadialGradient(
-        colors: [
-          Colors.cyanAccent.withOpacity(0.8),
-          Colors.cyanAccent.withOpacity(0.2),
-          Colors.transparent,
-        ],
-        stops: const [0.0, 0.6, 1.0],
-      ).createShader(Rect.fromCircle(center: center, radius: radius));
-
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: radius),
-      sweepAngle - 0.30,
-      0.30,
-      true,
-      beamPaint,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant RadarPainter oldDelegate) {
-    return true;
-  }
-}
-
-class StarPainter extends CustomPainter {
-  final double offset;
-
-  StarPainter({required this.offset});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = Colors.white.withOpacity(0.15);
-
-    for (int i = 0; i < 120; i++) {
-      final x = ((i * 97) % size.width);
-
-      final y = (((i * 43) + (offset * 50)) % size.height).toDouble();
-
-      canvas.drawCircle(Offset(x.toDouble(), y), 1.5, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant StarPainter oldDelegate) {
-    return true;
   }
 }

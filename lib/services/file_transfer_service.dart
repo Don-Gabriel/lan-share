@@ -1,12 +1,17 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:flutter/foundation.dart';
-import 'dart:async';
-import 'foreground_service.dart';
-import 'hash_service.dart';
 import 'dart:typed_data';
-import 'protocol_service.dart';
+
+import 'package:flutter/foundation.dart';
+
 import '../models/transfer_file.dart';
+import '../models/transfer_history_entry.dart';
+import 'android_file_bridge.dart';
+import 'hash_service.dart';
+import 'protocol_service.dart';
+import 'transfer_history_service.dart';
+import 'trusted_device_service.dart';
 
 enum TransferState { idle, receivingFile }
 
@@ -24,7 +29,7 @@ class FileTransferService {
   FileTransferService._internal();
   Socket? _activeSocket;
   String? _targetIp;
-  String? _pendingFilePath;
+  TransferFile? _pendingFile;
   List<TransferFile> _transferQueue = [];
 
   int _currentFileIndex = 0;
@@ -32,6 +37,11 @@ class FileTransferService {
   bool _batchTransfer = false;
   bool _transferCancelled = false;
   DateTime? _transferStartTime;
+  bool _historyWrittenForRun = false;
+  String _localDeviceName = Platform.localHostname;
+  String _localDeviceId = '';
+  String _localDeviceIp = '';
+  String _targetName = '';
 
   Function(List<int>)? onFileData;
 
@@ -64,6 +74,18 @@ class FileTransferService {
 
   ValueNotifier<String> toDevice = ValueNotifier('');
 
+  bool get isReceiving => _state == TransferState.receivingFile;
+
+  void setLocalDevice({
+    required String name,
+    required String id,
+    required String ip,
+  }) {
+    _localDeviceName = name;
+    _localDeviceId = id;
+    _localDeviceIp = ip;
+  }
+
   Future<void> sendReject() async {
     if (_activeSocket == null) return;
 
@@ -73,7 +95,7 @@ class FileTransferService {
 
     await _activeSocket!.flush();
 
-    print('Reject sent');
+    debugPrint('Reject sent');
   }
 
   Future<void> startServer({
@@ -88,13 +110,11 @@ class FileTransferService {
 
     final server = _server!;
 
-    final packetBuffer = BytesBuilder();
-
     server.listen((client) {
-      print('NEW TCP CONNECTION');
-      print('Client connected: ${client.remoteAddress.address}');
+      debugPrint('New TCP connection from ${client.remoteAddress.address}');
 
       _activeSocket = client;
+      final packetBuffer = BytesBuilder();
 
       client.listen(
         (data) {
@@ -134,23 +154,33 @@ class FileTransferService {
             }
 
             if (packet.type == 'file_offer') {
-              final json = utf8.decode(packet.payload);
+              try {
+                final json = utf8.decode(packet.payload);
 
-              final dataMap = jsonDecode(json) as Map<String, dynamic>;
+                final dataMap = jsonDecode(json) as Map<String, dynamic>;
 
-              dataMap['type'] = 'file_offer';
+                if (!_isValidFileOffer(dataMap)) {
+                  onPacket({'type': 'invalid_offer'});
+                  continue;
+                }
 
-              onPacket(dataMap);
+                dataMap['type'] = 'file_offer';
+
+                onPacket(dataMap);
+              } catch (e) {
+                debugPrint('Invalid file offer ignored: $e');
+                onPacket({'type': 'invalid_offer'});
+              }
             }
           }
         },
         onDone: () {
-          print('Client disconnected');
+          debugPrint('Client disconnected');
 
           _activeSocket = null;
         },
         onError: (e) {
-          print('Socket error: $e');
+          debugPrint('Socket error: $e');
 
           transferResult.value = TransferResult.failed;
           transferRunning.value = false;
@@ -185,11 +215,27 @@ class FileTransferService {
     await _activeSocket!.flush();
   }
 
+  bool _isValidFileOffer(Map<String, dynamic> data) {
+    if (data['appId'] != ProtocolService.appId ||
+        data['version'] != ProtocolService.protocolVersion) {
+      return false;
+    }
+
+    return data['name'] is String &&
+        data['size'] is int &&
+        data['sha256'] is String &&
+        data['batch'] is bool &&
+        data['fileIndex'] is int &&
+        data['totalFiles'] is int &&
+        data['relativePath'] is String &&
+        (data['size'] as int) >= 0 &&
+        (data['fileIndex'] as int) > 0 &&
+        (data['totalFiles'] as int) > 0;
+  }
+
   Future<void> sendFileOffer({
     required String ip,
-    required String fileName,
-    required int fileSize,
-    required String filePath,
+    required TransferFile file,
   }) async {
     try {
       _transferCancelled = false;
@@ -197,11 +243,11 @@ class FileTransferService {
 
       eta.value = '--';
       transferSpeed.value = '--';
-      _pendingFilePath = filePath;
+      _pendingFile = file;
 
-      this.fileName.value = fileName;
+      fileName.value = file.name;
 
-      totalBytes.value = fileSize;
+      totalBytes.value = file.size;
 
       transferredBytes.value = 0;
 
@@ -211,13 +257,12 @@ class FileTransferService {
 
       toDevice.value = ip;
 
-      // optional for now
-      fromDevice.value = Platform.localHostname;
+      fromDevice.value = _localDeviceName;
       transferStatus.value = 'Processing File...';
 
       _targetIp = ip;
 
-      print('Connecting to $ip...');
+      debugPrint('Connecting to $ip...');
 
       _activeSocket = await Socket.connect(
         ip,
@@ -225,20 +270,25 @@ class FileTransferService {
         timeout: const Duration(seconds: 5),
       );
 
-      final hash = await HashService.calculateSha256(filePath);
+      final hash = await _calculateFileHash(file);
 
-      print('SHA256: $hash');
+      debugPrint('SHA256: $hash');
 
       final currentFile = currentQueueFile;
 
       final jsonPacket = jsonEncode({
-        'name': fileName,
-        'size': fileSize,
+        'appId': ProtocolService.appId,
+        'version': ProtocolService.protocolVersion,
+        'name': file.name,
+        'size': file.size,
         'sha256': hash,
         'batch': _batchTransfer,
         'fileIndex': currentFileNumber,
         'totalFiles': totalFilesInQueue,
-        'relativePath': currentFile?.relativePath ?? fileName,
+        'relativePath': currentFile?.relativePath ?? file.relativePath,
+        'senderName': _localDeviceName,
+        'senderId': _localDeviceId,
+        'senderIp': _localDeviceIp,
       });
 
       final framed = ProtocolService.createPacket(
@@ -250,12 +300,12 @@ class FileTransferService {
 
       await _activeSocket!.flush();
 
-      print('File offer sent');
+      debugPrint('File offer sent');
 
       _offerTimeout?.cancel();
 
       _offerTimeout = Timer(const Duration(seconds: 30), () {
-        print('TRANSFER TIMEOUT');
+        debugPrint('TRANSFER TIMEOUT');
 
         transferResult.value = TransferResult.failed;
 
@@ -265,6 +315,7 @@ class FileTransferService {
 
         _activeSocket?.destroy();
         _activeSocket = null;
+        unawaited(_recordSendHistory(TransferResult.failed));
       });
 
       final senderPacketBuffer = BytesBuilder();
@@ -275,7 +326,7 @@ class FileTransferService {
         final packets = ProtocolService.extractPackets(senderPacketBuffer);
 
         for (final packet in packets) {
-          print('SENDER FRAME: ${packet.type}');
+          debugPrint('SENDER FRAME: ${packet.type}');
 
           if (packet.type == 'progress') {
             final progressJson = utf8.decode(packet.payload);
@@ -283,7 +334,7 @@ class FileTransferService {
             final progressData =
                 jsonDecode(progressJson) as Map<String, dynamic>;
 
-            print('PROGRESS PACKET: ${progressData['received']}');
+            debugPrint('PROGRESS PACKET: ${progressData['received']}');
 
             transferredBytes.value = progressData['received'];
 
@@ -291,8 +342,8 @@ class FileTransferService {
           }
 
           if (packet.type == 'transfer_ack') {
-            print('TRANSFER_ACK RECEIVED');
-            print('TRANSFER VERIFIED');
+            debugPrint('TRANSFER_ACK RECEIVED');
+            debugPrint('TRANSFER VERIFIED');
 
             transferredBytes.value = totalBytes.value;
 
@@ -300,7 +351,7 @@ class FileTransferService {
             _activeSocket = null;
 
             if (hasMoreFiles) {
-              print(
+              debugPrint(
                 'QUEUE CONTINUES -> FILE ${currentFileNumber + 1}/$totalFilesInQueue',
               );
 
@@ -308,7 +359,7 @@ class FileTransferService {
 
               await sendNextFileInQueue(_targetIp!);
             } else {
-              print('QUEUE FINISHED');
+              debugPrint('QUEUE FINISHED');
 
               transferResult.value = TransferResult.success;
 
@@ -316,7 +367,8 @@ class FileTransferService {
               transferredBytes.value++;
 
               sending.value = false;
-              print("SETTING SUCCESS STATE");
+              await _recordSendHistory(TransferResult.success);
+              debugPrint("SETTING SUCCESS STATE");
             }
 
             continue;
@@ -325,20 +377,23 @@ class FileTransferService {
           if (packet.type == 'accept') {
             _offerTimeout?.cancel();
 
-            print('TRANSFER ACCEPTED');
+            debugPrint('TRANSFER ACCEPTED');
+            await _trustDeviceFromAcceptPayload(packet.payload);
             transferStatus.value = 'Sending File...';
 
-            sendFileData(
-              onProgress: (transferred, total) {
-                print('SEND: $transferred / $total');
-              },
+            unawaited(
+              sendFileData(
+                onProgress: (transferred, total) {
+                  debugPrint('SEND: $transferred / $total');
+                },
+              ),
             );
 
             continue;
           }
 
           if (packet.type == 'reject') {
-            print('TRANSFER REJECTED');
+            debugPrint('TRANSFER REJECTED');
 
             _offerTimeout?.cancel();
 
@@ -349,29 +404,53 @@ class FileTransferService {
             sending.value = false;
 
             transferredBytes.value++;
+            await _recordSendHistory(TransferResult.failed);
+
+            continue;
+          }
+
+          if (packet.type == 'cancel_transfer') {
+            debugPrint('TRANSFER CANCELLED BY RECEIVER');
+
+            _transferCancelled = true;
+            _offerTimeout?.cancel();
+            transferResult.value = TransferResult.cancelled;
+            transferRunning.value = false;
+            sending.value = false;
+            transferredBytes.value++;
+            await _recordSendHistory(TransferResult.cancelled);
+            _activeSocket?.destroy();
+            _activeSocket = null;
 
             continue;
           }
         }
       });
     } catch (e) {
-      print('Connection failed: $e');
+      debugPrint('Connection failed: $e');
+      transferResult.value = TransferResult.failed;
+      transferRunning.value = false;
+      sending.value = false;
+      transferredBytes.value++;
+      await _recordSendHistory(TransferResult.failed);
     }
   }
 
-  Future<void> startBatchTransfer({required String ip}) async {
+  Future<void> startBatchTransfer({
+    required String ip,
+    required String deviceName,
+  }) async {
     if (_transferQueue.isEmpty) {
       return;
     }
 
+    _historyWrittenForRun = false;
+    _targetIp = ip;
+    _targetName = deviceName;
+
     final firstFile = _transferQueue.first;
 
-    await sendFileOffer(
-      ip: ip,
-      fileName: firstFile.name,
-      fileSize: firstFile.size,
-      filePath: firstFile.path,
-    );
+    await sendFileOffer(ip: ip, file: firstFile);
   }
 
   Future<void> sendNextFileInQueue(String ip) async {
@@ -387,16 +466,19 @@ class FileTransferService {
       return;
     }
 
-    print(
+    debugPrint(
       'STARTING NEXT FILE $currentFileNumber/$totalFilesInQueue : ${file.name}',
     );
 
-    await sendFileOffer(
-      ip: ip,
-      fileName: file.name,
-      fileSize: file.size,
-      filePath: file.path,
-    );
+    await sendFileOffer(ip: ip, file: file);
+  }
+
+  Future<String> _calculateFileHash(TransferFile file) async {
+    if (file.usesContentUri) {
+      return AndroidFileBridge.calculateSha256(file.contentUri!);
+    }
+
+    return HashService.calculateSha256(file.path);
   }
 
   Future<void> cancelTransfer() async {
@@ -412,6 +494,7 @@ class FileTransferService {
       }
     } catch (_) {}
 
+    await _recordSendHistory(TransferResult.cancelled);
     closeConnection();
   }
 
@@ -430,17 +513,15 @@ class FileTransferService {
   }) async {
     if (_activeSocket == null) return;
 
-    if (_pendingFilePath == null) return;
+    final file = _pendingFile;
 
-    final file = File(_pendingFilePath!);
+    if (file == null) return;
 
-    final totalSize = await file.length();
+    final totalSize = file.size;
 
     final transferStart = DateTime.now();
 
     int transferred = 0;
-
-    bool printedChunkSize = false;
 
     final startPacket = ProtocolService.createPacket('file_start', []);
     _activeSocket!.add(startPacket);
@@ -449,11 +530,21 @@ class FileTransferService {
 
     const chunkSize = 1024 * 1024; // 1 MB
 
-    final raf = await file.open();
+    if (file.usesContentUri) {
+      await _sendContentUriFile(file, totalSize, onProgress);
+
+      if (!_transferCancelled && _activeSocket != null) {
+        debugPrintTransferSummary(totalSize, transferStart);
+      }
+
+      return;
+    }
+
+    final raf = await File(file.path).open();
 
     while (true) {
       if (_transferCancelled) {
-        print('TRANSFER CANCELLED');
+        debugPrint('TRANSFER CANCELLED');
 
         await raf.close();
 
@@ -475,7 +566,7 @@ class FileTransferService {
       try {
         _activeSocket!.add(ProtocolService.createPacket('file_chunk', chunk));
       } catch (e) {
-        print('Socket closed during transfer');
+        debugPrint('Socket closed during transfer');
 
         await raf.close();
 
@@ -515,15 +606,92 @@ class FileTransferService {
 
       transferStatus.value = 'Finalizing Transfer...';
 
-      print('ALL FILE BYTES SENT');
-      print('File data sent: $totalSize bytes');
+      debugPrintTransferSummary(totalSize, transferStart);
+    }
+  }
 
-      final seconds =
-          DateTime.now().difference(transferStart).inMilliseconds / 1000;
+  Future<void> _sendContentUriFile(
+    TransferFile file,
+    int totalSize,
+    Function(int transferred, int total)? onProgress,
+  ) async {
+    const chunkSize = 1024 * 1024;
+    final handle = await AndroidFileBridge.openRead(file.contentUri!);
+    var transferred = 0;
 
-      print('SEND TIME: $seconds seconds');
+    try {
+      while (true) {
+        if (_transferCancelled || _activeSocket == null) {
+          return;
+        }
 
-      print(
+        final chunk = await AndroidFileBridge.readChunk(handle, chunkSize);
+
+        if (chunk.isEmpty) {
+          break;
+        }
+
+        try {
+          _activeSocket!.add(ProtocolService.createPacket('file_chunk', chunk));
+        } catch (_) {
+          debugPrint('Socket closed during transfer');
+          return;
+        }
+
+        transferred += chunk.length;
+        transferredBytes.value = transferred;
+        totalBytes.value = totalSize;
+        _updateSpeedAndEta(transferred, totalSize);
+
+        if (transferred % (10 * 1024 * 1024) < chunk.length) {
+          onProgress?.call(transferred, totalSize);
+        }
+      }
+    } finally {
+      await AndroidFileBridge.closeRead(handle);
+    }
+
+    if (!_transferCancelled && _activeSocket != null) {
+      await _activeSocket!.flush();
+      transferStatus.value = 'Finalizing Transfer...';
+    }
+  }
+
+  void _updateSpeedAndEta(int transferred, int totalSize) {
+    final startTime = _transferStartTime;
+
+    if (startTime == null) {
+      return;
+    }
+
+    final elapsedSeconds = DateTime.now().difference(startTime).inSeconds;
+
+    if (elapsedSeconds <= 0) {
+      return;
+    }
+
+    final bytesPerSecond = transferred / elapsedSeconds;
+    final remainingBytes = totalSize - transferred;
+    final etaSeconds = bytesPerSecond == 0
+        ? 0
+        : (remainingBytes / bytesPerSecond).round();
+
+    eta.value = formatEta(etaSeconds);
+    transferSpeed.value =
+        '${(bytesPerSecond / 1024 / 1024).toStringAsFixed(2)} MB/s';
+  }
+
+  void debugPrintTransferSummary(int totalSize, DateTime transferStart) {
+    debugPrint('ALL FILE BYTES SENT');
+    debugPrint('File data sent: $totalSize bytes');
+
+    final seconds =
+        DateTime.now().difference(transferStart).inMilliseconds / 1000;
+
+    debugPrint('SEND TIME: $seconds seconds');
+
+    if (seconds > 0) {
+      debugPrint(
         'SEND SPEED: ${(totalSize / 1024 / 1024 / seconds).toStringAsFixed(2)} MB/s',
       );
     }
@@ -549,10 +717,81 @@ class FileTransferService {
     return '${secs}s';
   }
 
+  Future<void> _recordSendHistory(TransferResult result) async {
+    if (_historyWrittenForRun || _transferQueue.isEmpty) {
+      return;
+    }
+
+    _historyWrittenForRun = true;
+
+    final status = switch (result) {
+      TransferResult.success => 'success',
+      TransferResult.cancelled => 'cancelled',
+      TransferResult.failed => 'failed',
+      TransferResult.none => 'unknown',
+    };
+    final totalSize = _transferQueue.fold<int>(
+      0,
+      (sum, file) => sum + file.size,
+    );
+    final firstFile = _transferQueue.first;
+
+    await TransferHistoryService.instance.add(
+      TransferHistoryEntry(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        direction: 'sent',
+        status: status,
+        fileName: _transferQueue.length == 1
+            ? firstFile.name
+            : '${_transferQueue.length} files',
+        fileCount: _transferQueue.length,
+        totalBytes: totalSize,
+        deviceName: _targetName.isEmpty
+            ? (_targetIp ?? 'Unknown')
+            : _targetName,
+        deviceIp: _targetIp ?? '',
+        completedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  Future<void> _trustDeviceFromAcceptPayload(List<int> payload) async {
+    if (payload.isEmpty) {
+      return;
+    }
+
+    try {
+      final data = jsonDecode(utf8.decode(payload)) as Map<String, dynamic>;
+      final deviceId = data['deviceId'] as String? ?? '';
+      final name = data['deviceName'] as String? ?? 'Remote Device';
+      final ip = data['deviceIp'] as String? ?? _targetIp ?? '';
+
+      if (deviceId.isEmpty) {
+        return;
+      }
+
+      await TrustedDeviceService.instance.trust(
+        id: deviceId,
+        name: name,
+        ip: ip,
+      );
+    } catch (error) {
+      debugPrint('Accept trust payload ignored: $error');
+    }
+  }
+
   Future<void> sendAccept() async {
     if (_activeSocket == null) return;
 
-    final packet = ProtocolService.createPacket('accept', []);
+    final payload = utf8.encode(
+      jsonEncode({
+        'deviceName': _localDeviceName,
+        'deviceId': _localDeviceId,
+        'deviceIp': _localDeviceIp,
+      }),
+    );
+
+    final packet = ProtocolService.createPacket('accept', payload);
 
     _activeSocket!.add(packet);
 
@@ -564,7 +803,7 @@ class FileTransferService {
 
     transferredBytes.value = 0;
 
-    print('Accept sent');
+    debugPrint('Accept sent');
   }
 
   void setTransferQueue(List<TransferFile> files) {

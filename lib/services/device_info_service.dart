@@ -1,6 +1,9 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 
 class DeviceInfoService {
@@ -22,9 +25,19 @@ class DeviceInfoService {
 
       ipAddress = await networkInfo.getWifiIP() ?? 'No IP Found';
     } catch (e) {
-      print('Error: $e');
+      debugPrint('Device info lookup failed: $e');
     }
 
-    return {'name': deviceName, 'ip': ipAddress};
+    final idSource = [
+      Platform.operatingSystem,
+      Platform.localHostname,
+      deviceName,
+    ].join('|');
+    final deviceId = sha256
+        .convert(utf8.encode(idSource))
+        .toString()
+        .substring(0, 16);
+
+    return {'name': deviceName, 'ip': ipAddress, 'id': deviceId};
   }
 }

@@ -1,7 +1,7 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+
 import 'home_screen.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -12,37 +12,30 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen>
-    with TickerProviderStateMixin {
-  late AnimationController radarController;
-  late AnimationController pulseController;
-  late AnimationController floatController;
-  late AnimationController textController;
+    with SingleTickerProviderStateMixin {
+  static const Color _background = Color(0xFFF5F7FA);
+  static const Color _surface = Colors.white;
+  static const Color _border = Color(0xFFE2E8F0);
+  static const Color _text = Color(0xFF172033);
+  static const Color _muted = Color(0xFF667085);
+  static const Color _accent = Color(0xFF0F766E);
+
+  late final AnimationController _controller;
+  late final Animation<double> _fade;
+  Timer? _navigationTimer;
 
   @override
   void initState() {
     super.initState();
 
-    radarController = AnimationController(
+    _controller = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 4),
-    )..repeat();
-
-    pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 2),
-    )..repeat(reverse: true);
-
-    floatController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 3),
-    )..repeat(reverse: true);
-
-    textController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1500),
+      duration: const Duration(milliseconds: 700),
     )..forward();
 
-    Timer(const Duration(milliseconds: 2800), () {
+    _fade = CurvedAnimation(parent: _controller, curve: Curves.easeOut);
+
+    _navigationTimer = Timer(const Duration(milliseconds: 1500), () {
       if (!mounted) return;
 
       Navigator.pushReplacement(
@@ -54,150 +47,67 @@ class _SplashScreenState extends State<SplashScreen>
 
   @override
   void dispose() {
-    radarController.dispose();
-    pulseController.dispose();
-    floatController.dispose();
-    textController.dispose();
+    _navigationTimer?.cancel();
+    _controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final size = MediaQuery.of(context).size;
-    final radarSize = math.min(size.width * 0.75, 320.0);
-
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF081B3A), Color(0xFF0A2A5E), Color(0xFF1565C0)],
-          ),
-        ),
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              SizedBox(
-                width: radarSize,
-                height: radarSize,
-                child: AnimatedBuilder(
-                  animation: Listenable.merge([
-                    radarController,
-                    pulseController,
-                    floatController,
-                  ]),
-                  builder: (context, child) {
-                    final pulse = 1.0 + (pulseController.value * 0.08);
-
-                    final floatY =
-                        math.sin(floatController.value * math.pi) * 12;
-
-                    return Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        CustomPaint(
-                          size: Size(radarSize, radarSize),
-                          painter: SplashRadarPainter(
-                            radarController.value * 2 * math.pi,
-                          ),
-                        ),
-
-                        Container(
-                          width: 180 * pulse,
-                          height: 180 * pulse,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: Colors.cyanAccent.withOpacity(0.12),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.cyanAccent.withOpacity(0.45),
-                                blurRadius: 60,
-                                spreadRadius: 10,
-                              ),
-                            ],
-                          ),
-                        ),
-
-                        Transform.translate(
-                          offset: Offset(0, floatY),
-                          child: Image.asset('assets/logo.png', width: 140),
-                        ),
-                      ],
-                    );
-                  },
+      backgroundColor: _background,
+      body: Center(
+        child: FadeTransition(
+          opacity: _fade,
+          child: Container(
+            width: 260,
+            padding: const EdgeInsets.all(28),
+            decoration: BoxDecoration(
+              color: _surface,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: _border),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 104,
+                  height: 104,
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE6FFFA),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Image.asset('assets/logo.png', fit: BoxFit.contain),
                 ),
-              ),
-
-              const SizedBox(height: 30),
-
-              FadeTransition(
-                opacity: textController,
-                child: const Text(
+                const SizedBox(height: 18),
+                const Text(
                   'LAN Share',
                   style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 34,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.2,
+                    color: _text,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
-              ),
-
-              const SizedBox(height: 10),
-
-              FadeTransition(
-                opacity: textController,
-                child: const Text(
-                  'Fast • Secure • Offline',
-                  style: TextStyle(color: Colors.white70, fontSize: 16),
+                const SizedBox(height: 10),
+                const SizedBox(
+                  width: 120,
+                  child: LinearProgressIndicator(
+                    minHeight: 3,
+                    backgroundColor: Color(0xFFE2E8F0),
+                    valueColor: AlwaysStoppedAnimation(_accent),
+                  ),
                 ),
-              ),
-            ],
+                const SizedBox(height: 12),
+                const Text(
+                  'Starting...',
+                  style: TextStyle(color: _muted, fontSize: 13),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
-}
-
-class SplashRadarPainter extends CustomPainter {
-  final double sweepAngle;
-
-  SplashRadarPainter(this.sweepAngle);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
-
-    final radius = size.width / 2;
-
-    final ringPaint = Paint()
-      ..color = Colors.cyanAccent.withOpacity(0.18)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-
-    for (int i = 1; i <= 4; i++) {
-      canvas.drawCircle(center, radius * i / 4, ringPaint);
-    }
-
-    final sweepPaint = Paint()
-      ..shader = SweepGradient(
-        startAngle: sweepAngle,
-        endAngle: sweepAngle + 0.5,
-        colors: [Colors.transparent, Colors.cyanAccent.withOpacity(0.55)],
-      ).createShader(Rect.fromCircle(center: center, radius: radius));
-
-    canvas.drawArc(
-      Rect.fromCircle(center: center, radius: radius),
-      sweepAngle,
-      0.5,
-      true,
-      sweepPaint,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }
